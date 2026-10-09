@@ -1,6 +1,7 @@
 -- @noindex
 local reaper = reaper
 local Mapper = {}
+local VoiceMap = require("voice_map")
 
 local PARTS = {
   { channel = 9, name = "Ch 9: Rhythm 2 (Percussion)", drum = true },
@@ -40,9 +41,10 @@ local function insert_events(take, events, channel, ppq, drum)
       elseif kind == 0xC0 and voice.prg == nil then voice.prg = event.data1 end
     end
   end
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, voice.msb or (drum and 127 or 0))
-  reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, voice.lsb or 0)
-  reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, voice.prg or 0, 0)
+  local mx = VoiceMap.resolve(voice, drum)
+  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, mx.msb)
+  reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, mx.lsb)
+  reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, mx.prg, 0)
   local open_notes = {}
   for _, event in ipairs(events) do
     if (event.status & 0x0F) == chan then
@@ -64,7 +66,7 @@ local function insert_events(take, events, channel, ppq, drum)
           reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, event.data1, event.data2)
         end
       elseif event_type == 0xC0 then
-        if tick > 0 then reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, event.data1, 0) end
+        -- Style program changes use GM/XG numbers that would override the mapped MX88 voice.
       elseif event_type == 0xE0 then
         reaper.MIDI_InsertCC(take, false, false, tick, 0xE0, chan, event.data1, event.data2)
       end
@@ -102,6 +104,7 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
   devices = devices or {}
   local output = devices.yamaha_output or midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
   ensure_jsfx(transposer_path)
+  VoiceMap.init(((transposer_path or ''):gsub('[^/\\]+[/\\][^/\\]+$', '')) .. 'data/Yamaha_MX49.reabank')
   local rig = { folder = folder, children = {}, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
   for index, part in ipairs(PARTS) do

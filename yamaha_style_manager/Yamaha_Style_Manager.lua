@@ -1,11 +1,12 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.5
+-- @version 1.0.6
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
 --   modules/*.lua
 --   jsfx/*.jsfx
+--   data/*.reabank
 
 local reaper = reaper
 
@@ -225,8 +226,10 @@ local function draw_file_tree()
   local function draw_directory(relative)
     for _, file in ipairs(by_directory[relative] or {}) do
       local is_selected = state.selected == file.path
-      if reaper.ImGui_Selectable(ctx, file.name .. "##" .. file.path, is_selected) then
+      if reaper.ImGui_Selectable(ctx, file.name .. "##" .. file.path, is_selected,
+          reaper.ImGui_SelectableFlags_AllowDoubleClick()) then
         state.selected = file.path
+        if reaper.ImGui_IsMouseDoubleClicked(ctx, 0) then state.import_requested = true end
       end
     end
     local children = {}
@@ -322,7 +325,13 @@ refresh_library()
 
 local function loop()
   Launchpad.poll()
-  if draw_window() then reaper.defer(loop)
+  local keep_open = draw_window()
+  if state.import_requested then
+    state.import_requested = false
+    import_selected()
+    if not state.status_is_error then keep_open = false end
+  end
+  if keep_open then reaper.defer(loop)
   elseif reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
 end
 reaper.defer(loop)
