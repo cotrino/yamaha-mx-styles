@@ -3,7 +3,7 @@ desc:Yamaha STY live chord transposer
 author:Jose M. Cotrino
 tags:MIDI Yamaha arranger transpose
 
-slider1:0<-24,24,1>Transpose semitones
+slider1:0<-24,24,1>Additional transpose semitones
 
 @block
 while (
@@ -12,11 +12,21 @@ while (
     channel = msg1 & $x0F;
     note = msg23 & $x7F;
     velocity = (msg23 / 256) | 0;
-    // Channels 9-16 contain the imported Yamaha accompaniment parts.
-    (channel >= 8 && (status == $x90 || status == $x80)) ? (
-      note = min(127, max(0, note + slider1));
-      msg23 = (msg23 & $xFFFFFF00) | note;
+    // Channel 1 is the live chord source. Its lowest held note is the style root.
+    channel == 0 && (status == $x90 || status == $x80) ? (
+      status == $x90 && velocity > 0 ? held[note] = 1 : held[note] = 0;
+      root = 60;
+      candidate = 0;
+      loop(128,
+        held[candidate] ? (root = candidate; candidate = 128) : candidate += 1;
+      );
+    ) : (
+      // Channels 9-16 contain the imported Yamaha accompaniment parts.
+      (channel >= 8 && (status == $x90 || status == $x80)) ? (
+        note = min(127, max(0, note + root - 60 + slider1));
+        msg23 = (msg23 & $xFFFFFF00) | note;
+      );
+      midisend(offset, msg1, msg23);
     );
-    midisend(offset, msg1, msg23);
   );
 );

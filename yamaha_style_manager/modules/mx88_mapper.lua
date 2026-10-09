@@ -88,9 +88,13 @@ function Mapper.create_rig(style, style_path, transposer_path)
   reaper.InsertTrackAtIndex(insert_at, true)
   local input = reaper.GetTrack(0, insert_at)
   reaper.GetSetMediaTrackInfo_String(input, "P_NAME", "[MIDI] Yamaha MX88 Chord Input", true)
-  local fx = reaper.TrackFX_AddByName(input, "sty_chord_transposer", false, 1)
-  if fx < 0 and transposer_path then
-    reaper.TrackFX_AddByName(input, transposer_path, false, 1)
+  for _, track in ipairs(rig.children) do
+    reaper.CreateTrackSend(input, track)
+    if transposer_path then
+      reaper.TrackFX_AddByName(track, transposer_path, false, 1)
+    else
+      reaper.TrackFX_AddByName(track, "sty_chord_transposer", false, 1)
+    end
   end
   return rig
 end
