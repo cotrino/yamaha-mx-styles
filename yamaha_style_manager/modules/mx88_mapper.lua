@@ -104,7 +104,6 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
   devices = devices or {}
   local output = devices.yamaha_output or midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
   ensure_jsfx(transposer_path)
-  VoiceMap.init(((transposer_path or ''):gsub('[^/\\]+[/\\][^/\\]+$', '')) .. 'data/Yamaha_MX49.reabank')
   local rig = { folder = folder, children = {}, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
   for index, part in ipairs(PARTS) do
