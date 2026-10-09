@@ -20,6 +20,7 @@ from urllib.parse import quote
 ROOT = PurePosixPath("yamaha_style_manager")
 MAIN_SCRIPT = str(ROOT / "Yamaha_Style_Manager.lua")
 INDEX_FILE = "index.xml"
+CATEGORY = "Scripts/Yamaha_Style_Manager"
 
 
 class IndexError(Exception):
@@ -169,7 +170,7 @@ def build_index() -> bytes:
         raise IndexError("existing index has no package entry to preserve metadata")
 
     output = ET.Element("index", {"version": "1", "name": root.get("name", "ReaPack repository")})
-    category = ET.SubElement(output, "category", {"name": ROOT.as_posix()})
+    category = ET.SubElement(output, "category", {"name": CATEGORY})
     manifest_head = parse_manifest(read_blob(str(git("rev-parse", "HEAD")).strip(), MAIN_SCRIPT))
     package = ET.SubElement(
         category,
