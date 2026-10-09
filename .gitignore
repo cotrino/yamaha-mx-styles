@@ -1,0 +1,6 @@
+# Yamaha styles remain a local user library and are never published.
+styles/
+
+# Python bytecode from the ReaPack-index validation tool.
+__pycache__/
+*.pyc

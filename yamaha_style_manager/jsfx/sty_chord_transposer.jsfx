@@ -1,0 +1,22 @@
+// @noindex
+desc:Yamaha STY live chord transposer
+author:Jose M. Cotrino
+tags:MIDI Yamaha arranger transpose
+
+slider1:0<-24,24,1>Transpose semitones
+
+@block
+while (
+  midirecv(offset, msg1, msg23) ? (
+    status = msg1 & $xF0;
+    channel = msg1 & $x0F;
+    note = msg23 & $x7F;
+    velocity = (msg23 / 256) | 0;
+    // Channels 9-16 contain the imported Yamaha accompaniment parts.
+    (channel >= 8 && (status == $x90 || status == $x80)) ? (
+      note = min(127, max(0, note + slider1));
+      msg23 = (msg23 & $xFFFFFF00) | note;
+    );
+    midisend(offset, msg1, msg23);
+  );
+);
