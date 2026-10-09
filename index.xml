@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="Yamaha MX Styles" commit="be20a48f2e73398db2ee383b0c8f75c8ad0b5233">
+  <category name="Scripts/Yamaha_Style_Manager">
+    <reapack name="Yamaha_Style_Manager.lua" type="script" desc="Yamaha STY Style Manager &amp; Live Rig Builder">
+      <metadata>
+        <description>Browse Yamaha STY files and create an MX88/Launchpad live rig.</description>
+      </metadata>
+      <version name="1.0.0" author="Jose M. Cotrino" time="2026-10-09T18:39:12Z">
+        <source main="main">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/Yamaha_Style_Manager.lua</source>
+        <source file="../Effects/sty_chord_transposer.jsfx">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/jsfx/sty_chord_transposer.jsfx</source>
+        <source file="modules/launchpad_controller.lua">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/modules/launchpad_controller.lua</source>
+        <source file="modules/mx88_mapper.lua">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/modules/mx88_mapper.lua</source>
+        <source file="modules/region_builder.lua">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/modules/region_builder.lua</source>
+        <source file="modules/sty_parser.lua">https://github.com/cotrino/yamaha-mx-styles/raw/be20a48f2e73398db2ee383b0c8f75c8ad0b5233/yamaha_style_manager/modules/sty_parser.lua</source>
+      </version>
+    </reapack>
+  </category>
+</index>
