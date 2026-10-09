@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.4
+-- @version 1.0.5
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -99,8 +99,8 @@ end
 local DEVICE_SLOTS = {
   { key = "yamaha_output", label = "Yamaha output (MX88)", outputs = true, keywords = { "yamaha", "mx" } },
   { key = "yamaha_input", label = "Yamaha input (keys / chords)", keywords = { "yamaha", "mx" } },
-  { key = "launchpad_input", label = "Launchpad input", keywords = { "launchpad" } },
-  { key = "launchpad_output", label = "Launchpad output (LEDs)", outputs = true, keywords = { "launchpad" } },
+  { key = "launchpad_input", label = "Launchpad input", keywords = { "launchpad", "lpmini" }, any = true },
+  { key = "launchpad_output", label = "Launchpad output (LEDs)", outputs = true, keywords = { "launchpad", "lpmini" }, any = true },
 }
 local device_names = {}
 for _, slot in ipairs(DEVICE_SLOTS) do device_names[slot.key] = reaper.GetExtState(EXT_SECTION, slot.key) end
@@ -116,15 +116,16 @@ local function enumerate_devices(outputs)
   return list
 end
 
-local function resolve_device(list, name, keywords)
+local function resolve_device(list, name, keywords, any)
   if name ~= "" then
     for _, device in ipairs(list) do if device.name == name then return device end end
     return nil
   end
   for _, device in ipairs(list) do
-    local lower, matches = device.name:lower(), true
+    local lower, matches = device.name:lower(), not any
     for _, keyword in ipairs(keywords) do
-      if not lower:find(keyword, 1, true) then matches = false break end
+      local found = lower:find(keyword, 1, true) ~= nil
+      if any then matches = matches or found elseif not found then matches = false break end
     end
     if matches then return device end
   end
@@ -136,7 +137,7 @@ local function current_devices()
   local resolved, ids = {}, {}
   for _, slot in ipairs(DEVICE_SLOTS) do
     local list = lists[slot.outputs == true]
-    local device = resolve_device(list, device_names[slot.key], slot.keywords)
+    local device = resolve_device(list, device_names[slot.key], slot.keywords, slot.any)
     if device and device_names[slot.key] == "" then
       device_names[slot.key] = device.name
       reaper.SetExtState(EXT_SECTION, slot.key, device.name, true)
@@ -322,6 +323,6 @@ refresh_library()
 local function loop()
   Launchpad.poll()
   if draw_window() then reaper.defer(loop)
-  else reaper.ImGui_DestroyContext(ctx) end
+  elseif reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
 end
 reaper.defer(loop)

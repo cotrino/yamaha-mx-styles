@@ -29,8 +29,20 @@ local REAPER_PPQ = 960
 local function insert_events(take, events, channel, ppq, drum)
   local chan = channel - 1
   local function scale(tick) return math.floor(tick * REAPER_PPQ / ppq + 0.5) end
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, 63)
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 32, drum and 32 or 0)
+  -- Use the voice (bank MSB/LSB + program) the style itself selects on this channel,
+  -- so the MX88 plays the right sound; fall back to a generic bank only if absent.
+  local voice = {}
+  for _, event in ipairs(events) do
+    if (event.status & 0x0F) == chan then
+      local kind = event.status & 0xF0
+      if kind == 0xB0 and event.data1 == 0 and voice.msb == nil then voice.msb = event.data2
+      elseif kind == 0xB0 and event.data1 == 32 and voice.lsb == nil then voice.lsb = event.data2
+      elseif kind == 0xC0 and voice.prg == nil then voice.prg = event.data1 end
+    end
+  end
+  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, voice.msb or (drum and 127 or 0))
+  reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, voice.lsb or 0)
+  reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, voice.prg or 0, 0)
   local open_notes = {}
   for _, event in ipairs(events) do
     if (event.status & 0x0F) == chan then
@@ -47,12 +59,12 @@ local function insert_events(take, events, channel, ppq, drum)
             chan, event.data1, note.velocity, true)
         end
       elseif event_type == 0xB0 then
-        -- The rig injects the MX88 bank select; ignore the style's own bank CCs.
+        -- Bank/program were already sent at the start of the item.
         if event.data1 ~= 0 and event.data1 ~= 32 then
           reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, event.data1, event.data2)
         end
       elseif event_type == 0xC0 then
-        reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, event.data1, 0)
+        if tick > 0 then reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, event.data1, 0) end
       elseif event_type == 0xE0 then
         reaper.MIDI_InsertCC(take, false, false, tick, 0xE0, chan, event.data1, event.data2)
       end
@@ -96,7 +108,7 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
     reaper.InsertTrackAtIndex(insert_at + index, true)
     local track = reaper.GetTrack(0, insert_at + index)
     reaper.GetSetMediaTrackInfo_String(track, "P_NAME", part.name, true)
-    if output then reaper.SetMediaTrackInfo_Value(track, "I_MIDIHWOUT", (output << 5) | (part.channel - 1)) end
+    if output then reaper.SetMediaTrackInfo_Value(track, "I_MIDIHWOUT", (output << 5) | part.channel) end
     local item = reaper.CreateNewMIDIItemInProj(track, 0, length, false)
     local take = reaper.GetActiveTake(item)
     insert_events(take, style.events, part.channel, style.ppq, part.drum)
