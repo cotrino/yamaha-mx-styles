@@ -23,13 +23,14 @@ local function input_named(name)
   end
 end
 
-function Launchpad.setup(folder, region_count)
+function Launchpad.setup(folder, region_count, devices)
+  devices = devices or {}
   local index = math.floor(reaper.GetMediaTrackInfo_Value(folder, "IP_TRACKNUMBER")) - 1
   reaper.InsertTrackAtIndex(index, true)
   local track = reaper.GetTrack(0, index)
   reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "[MIDI] Launchpad Controller", true)
-  Launchpad.output = output_named("Launchpad")
-  Launchpad.input = input_named("Launchpad")
+  Launchpad.output = devices.launchpad_output or output_named("Launchpad")
+  Launchpad.input = devices.launchpad_input or input_named("Launchpad")
   for pad, map in pairs(PAD_MAP) do
     if Launchpad.output then reaper.StuffMIDIMessage(16 + Launchpad.output, 0x90, pad, map[2]) end
     Launchpad.actions[pad] = reaper.NamedCommandLookup(string.format("_SWS_SM_GOTO_REG%d", map[1]))

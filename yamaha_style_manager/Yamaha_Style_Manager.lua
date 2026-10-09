@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.3
+-- @version 1.0.4
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -96,8 +96,73 @@ local function selected_file()
   end
 end
 
-local function import_selected()
-  local file = selected_file()
+local DEVICE_SLOTS = {
+  { key = "yamaha_output", label = "Yamaha output (MX88)", outputs = true, keywords = { "yamaha", "mx" } },
+  { key = "yamaha_input", label = "Yamaha input (keys / chords)", keywords = { "yamaha", "mx" } },
+  { key = "launchpad_input", label = "Launchpad input", keywords = { "launchpad" } },
+  { key = "launchpad_output", label = "Launchpad output (LEDs)", outputs = true, keywords = { "launchpad" } },
+}
+local device_names = {}
+for _, slot in ipairs(DEVICE_SLOTS) do device_names[slot.key] = reaper.GetExtState(EXT_SECTION, slot.key) end
+
+local function enumerate_devices(outputs)
+  local list = {}
+  local count = outputs and reaper.GetNumMIDIOutputs() or reaper.GetNumMIDIInputs()
+  for id = 0, count - 1 do
+    local ok, name
+    if outputs then ok, name = reaper.GetMIDIOutputName(id, "") else ok, name = reaper.GetMIDIInputName(id, "") end
+    if ok and name and name ~= "" then list[#list + 1] = { id = id, name = name } end
+  end
+  return list
+end
+
+local function resolve_device(list, name, keywords)
+  if name ~= "" then
+    for _, device in ipairs(list) do if device.name == name then return device end end
+    return nil
+  end
+  for _, device in ipairs(list) do
+    local lower, matches = device.name:lower(), true
+    for _, keyword in ipairs(keywords) do
+      if not lower:find(keyword, 1, true) then matches = false break end
+    end
+    if matches then return device end
+  end
+end
+
+-- Returns {slot_key = device} for UI display and {slot_key = id} for the modules.
+local function current_devices()
+  local lists = { [true] = enumerate_devices(true), [false] = enumerate_devices(false) }
+  local resolved, ids = {}, {}
+  for _, slot in ipairs(DEVICE_SLOTS) do
+    local list = lists[slot.outputs == true]
+    local device = resolve_device(list, device_names[slot.key], slot.keywords)
+    if device and device_names[slot.key] == "" then
+      device_names[slot.key] = device.name
+      reaper.SetExtState(EXT_SECTION, slot.key, device.name, true)
+    end
+    resolved[slot.key] = device
+    ids[slot.key] = device and device.id or nil
+  end
+  return resolved, ids, lists
+end
+
+local function device_selector(slot, list, selected)
+  reaper.ImGui_SetNextItemWidth(ctx, 420)
+  if reaper.ImGui_BeginCombo(ctx, slot.label, selected and selected.name or "Select device...") then
+    for _, device in ipairs(list) do
+      local is_selected = device.name == device_names[slot.key]
+      if reaper.ImGui_Selectable(ctx, device.name, is_selected) then
+        device_names[slot.key] = device.name
+        reaper.SetExtState(EXT_SECTION, slot.key, device.name, true)
+      end
+      if is_selected then reaper.ImGui_SetItemDefaultFocus(ctx) end
+    end
+    reaper.ImGui_EndCombo(ctx)
+  end
+end
+
+local function import_selected()  local file = selected_file()
   if not file then
     state.status, state.status_is_error = "Select a style file first.", true
     return
@@ -112,9 +177,9 @@ local function import_selected()
   reaper.Undo_BeginBlock()
   reaper.PreventUIRefresh(1)
   local imported, rig_or_error, region_count, launchpad = pcall(function()
-    local rig = Mapper.create_rig(parsed_or_error, file.path, script_path .. "jsfx/sty_chord_transposer.jsfx")
+    local rig = Mapper.create_rig(parsed_or_error, file.path, script_path .. "jsfx/sty_chord_transposer.jsfx", select(2, current_devices()))
     local region_count = Regions.create(parsed_or_error.markers, parsed_or_error.end_tick, parsed_or_error.ppq)
-    local launchpad = Launchpad.setup(rig.folder, region_count)
+    local launchpad = Launchpad.setup(rig.folder, region_count, select(2, current_devices()))
     return rig, region_count, launchpad
   end)
   reaper.PreventUIRefresh(-1)
@@ -182,6 +247,12 @@ local function draw_file_tree()
 end
 
 local function draw_window()
+  -- ReaImGui persists window geometry; force a large on-screen window on each launch.
+  if not state.sized then
+    reaper.ImGui_SetNextWindowPos(ctx, 20, 40, reaper.ImGui_Cond_Always())
+    reaper.ImGui_SetNextWindowSize(ctx, 1400, 950, reaper.ImGui_Cond_Always())
+    state.sized, state.open_hw = true, true
+  end
   local visible, open = reaper.ImGui_Begin(ctx, "Yamaha STY Style Manager & Live Rig Builder", true)
   if visible then
     reaper.ImGui_Text(ctx, "Style library:")
@@ -196,10 +267,21 @@ local function draw_window()
     if reaper.ImGui_Button(ctx, "Import Style to Rig") then import_selected() end
     if not can_import then reaper.ImGui_EndDisabled(ctx) end
 
+    if state.open_hw then
+      reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
+      state.open_hw = false
+    end
+    if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
+      local resolved, _, lists = current_devices()
+      for _, slot in ipairs(DEVICE_SLOTS) do
+        device_selector(slot, lists[slot.outputs == true], resolved[slot.key])
+      end
+    end
+
     local changed
     changed, state.filter = reaper.ImGui_InputText(ctx, "Search", state.filter)
     reaper.ImGui_Separator(ctx)
-    if reaper.ImGui_BeginChild(ctx, "StyleBrowser", -1, -80, reaper.ImGui_ChildFlags_Border and reaper.ImGui_ChildFlags_Border() or 1) then
+    if reaper.ImGui_BeginChild(ctx, "StyleBrowser", -1, -60, reaper.ImGui_ChildFlags_Border and reaper.ImGui_ChildFlags_Border() or 1) then
       draw_file_tree()
       reaper.ImGui_EndChild(ctx)
     end

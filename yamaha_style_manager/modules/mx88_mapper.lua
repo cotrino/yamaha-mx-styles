@@ -80,14 +80,15 @@ local function ensure_jsfx(source_path)
   if output then output:write(data) output:close() end
 end
 
-function Mapper.create_rig(style, style_path, transposer_path)
+function Mapper.create_rig(style, style_path, transposer_path, devices)
   local insert_at = reaper.CountTracks(0)
   reaper.InsertTrackAtIndex(insert_at, true)
   local folder = reaper.GetTrack(0, insert_at)
   reaper.GetSetMediaTrackInfo_String(folder, "P_NAME", "[YAMAHA STY RIG] - " .. basename(style_path), true)
   reaper.SetMediaTrackInfo_Value(folder, "I_FOLDERDEPTH", 1)
 
-  local output = midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
+  devices = devices or {}
+  local output = devices.yamaha_output or midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
   ensure_jsfx(transposer_path)
   local rig = { folder = folder, children = {}, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
