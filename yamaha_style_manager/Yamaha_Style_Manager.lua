@@ -1,6 +1,6 @@
--- @description Yamaha STY Style Manager & Live Rig Builder
+﻿-- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.1
+-- @version 1.0.2
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .

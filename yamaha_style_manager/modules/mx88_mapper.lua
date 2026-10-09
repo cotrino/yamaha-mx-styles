@@ -24,43 +24,60 @@ local function midi_output_named(name)
   end
 end
 
+local REAPER_PPQ = 960
+
 local function insert_events(take, events, channel, ppq, drum)
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0 | (channel - 1), 0, 63)
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0 | (channel - 1), 32, drum and 32 or 0)
+  local chan = channel - 1
+  local function scale(tick) return math.floor(tick * REAPER_PPQ / ppq + 0.5) end
+  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, 63)
+  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 32, drum and 32 or 0)
   local open_notes = {}
-  local function note_key(note)
-    return tostring(note)
-  end
   for _, event in ipairs(events) do
-    if (event.status & 0x0F) + 1 == channel then
+    if (event.status & 0x0F) == chan then
       local event_type = event.status & 0xF0
+      local tick = scale(event.tick)
       if event_type == 0x90 and event.data2 > 0 then
-        local key = note_key(event.data1)
-        open_notes[key] = open_notes[key] or {}
-        open_notes[key][#open_notes[key] + 1] = { tick = event.tick, velocity = event.data2 }
+        open_notes[event.data1] = open_notes[event.data1] or {}
+        table.insert(open_notes[event.data1], { tick = tick, velocity = event.data2 })
       elseif event_type == 0x80 or (event_type == 0x90 and event.data2 == 0) then
-        local notes = open_notes[note_key(event.data1)]
-        local note = notes and table.remove(notes, 1)
+        local pending = open_notes[event.data1]
+        local note = pending and table.remove(pending, 1)
         if note then
-          reaper.MIDI_InsertNote(take, false, false, note.tick, math.max(note.tick + 1, event.tick),
-            channel - 1, event.data1, note.velocity, true)
+          reaper.MIDI_InsertNote(take, false, false, note.tick, math.max(note.tick + 1, tick),
+            chan, event.data1, note.velocity, true)
         end
       elseif event_type == 0xB0 then
-        reaper.MIDI_InsertCC(take, false, false, event.tick, 0xB0 | (channel - 1), event.data1, event.data2)
+        -- The rig injects the MX88 bank select; ignore the style's own bank CCs.
+        if event.data1 ~= 0 and event.data1 ~= 32 then
+          reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, event.data1, event.data2)
+        end
       elseif event_type == 0xC0 then
-        reaper.MIDI_InsertCC(take, false, false, event.tick, 0xC0 | (channel - 1), event.data1, 0)
+        reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, event.data1, 0)
       elseif event_type == 0xE0 then
-        reaper.MIDI_InsertCC(take, false, false, event.tick, 0xE0 | (channel - 1), event.data1, event.data2)
+        reaper.MIDI_InsertCC(take, false, false, tick, 0xE0, chan, event.data1, event.data2)
       end
     end
   end
-  for note, notes in pairs(open_notes) do
-    for _, open in ipairs(notes) do
-      reaper.MIDI_InsertNote(take, false, false, open.tick, open.tick + math.max(1, ppq / 16),
-        channel - 1, tonumber(note), open.velocity, true)
+  for pitch, pending in pairs(open_notes) do
+    for _, open in ipairs(pending) do
+      reaper.MIDI_InsertNote(take, false, false, open.tick, open.tick + REAPER_PPQ // 16,
+        chan, pitch, open.velocity, true)
     end
   end
   reaper.MIDI_Sort(take)
+end
+local FX_NAME = "Yamaha/sty_chord_transposer.jsfx"
+
+-- JSFX can only be loaded from REAPER's Effects folder, so install it there on demand.
+local function ensure_jsfx(source_path)
+  local dir = reaper.GetResourcePath() .. "/Effects/Yamaha"
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local input = source_path and io.open(source_path, "rb")
+  if not input then return end
+  local data = input:read("*a")
+  input:close()
+  local output = io.open(dir .. "/sty_chord_transposer.jsfx", "wb")
+  if output then output:write(data) output:close() end
 end
 
 function Mapper.create_rig(style, style_path, transposer_path)
@@ -71,6 +88,7 @@ function Mapper.create_rig(style, style_path, transposer_path)
   reaper.SetMediaTrackInfo_Value(folder, "I_FOLDERDEPTH", 1)
 
   local output = midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
+  ensure_jsfx(transposer_path)
   local rig = { folder = folder, children = {}, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
   for index, part in ipairs(PARTS) do
@@ -90,11 +108,7 @@ function Mapper.create_rig(style, style_path, transposer_path)
   reaper.GetSetMediaTrackInfo_String(input, "P_NAME", "[MIDI] Yamaha MX88 Chord Input", true)
   for _, track in ipairs(rig.children) do
     reaper.CreateTrackSend(input, track)
-    if transposer_path then
-      reaper.TrackFX_AddByName(track, transposer_path, false, 1)
-    else
-      reaper.TrackFX_AddByName(track, "sty_chord_transposer", false, 1)
-    end
+    reaper.TrackFX_AddByName(track, FX_NAME, false, -1)
   end
   return rig
 end

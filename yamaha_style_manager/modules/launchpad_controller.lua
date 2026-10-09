@@ -24,7 +24,7 @@ local function input_named(name)
 end
 
 function Launchpad.setup(folder, region_count)
-  local index = reaper.GetMediaTrackInfo_Value(folder, "IP_TRACKNUMBER")
+  local index = math.floor(reaper.GetMediaTrackInfo_Value(folder, "IP_TRACKNUMBER")) - 1
   reaper.InsertTrackAtIndex(index, true)
   local track = reaper.GetTrack(0, index)
   reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "[MIDI] Launchpad Controller", true)
