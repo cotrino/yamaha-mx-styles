@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <index version="1" name="Yamaha MX Styles" commit="d0e304f216d0cf9248661713a4df67993fa32ec8">
-  <category name="Scripts/Yamaha_Style_Manager">
+  <category name="yamaha_style_manager">
     <reapack name="Yamaha_Style_Manager.lua" type="script" desc="Yamaha STY Style Manager &amp; Live Rig Builder">
       <metadata>
         <description>Browse Yamaha STY files and create an MX88/Launchpad live rig.</description>

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the ReaPack index from versioned package manifests."""
+"""Generate this repository's ReaPack index without Ruby or native extensions."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import fnmatch
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -14,119 +16,213 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
+
 ROOT = PurePosixPath("yamaha_style_manager")
-MAIN = ROOT / "Yamaha_Style_Manager.lua"
+MAIN_SCRIPT = str(ROOT / "Yamaha_Style_Manager.lua")
+INDEX_FILE = "index.xml"
 
 
 class IndexError(Exception):
     pass
 
 
-def git(*args: str, binary: bool = False) -> str | bytes:
-    result = subprocess.run(["git", *args], cwd=ROOT_DIR, capture_output=True, text=not binary)
+def git(*args: str, text: bool = True) -> str | bytes:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+    )
     if result.returncode:
-        raise IndexError(result.stderr.decode(errors="replace") if binary else result.stderr.strip())
+        stderr = result.stderr.strip() if text else result.stderr.decode(errors="replace").strip()
+        raise IndexError(f"git {' '.join(args)} failed: {stderr}")
     return result.stdout
 
 
-def manifest(text: str) -> tuple[dict[str, str], list[str]]:
-    fields, provides, in_provides = {}, [], False
+def repo_root() -> str:
+    return str(git("rev-parse", "--show-toplevel")).strip()
+
+
+def read_blob(commit: str, path: str) -> str:
+    data = git("show", f"{commit}:{path}", text=False)
+    return data.decode("utf-8-sig")
+
+
+def parse_manifest(text: str) -> dict:
+    fields: dict[str, str] = {}
+    provides: list[str] = []
+    in_provides = False
     for line in text.splitlines():
         match = re.match(r"\s*--\s*@([\w-]+)\s*(.*)$", line)
         if match:
             key, value = match.groups()
             in_provides = key == "provides"
-            if key == "provides":
-                if value.strip():
-                    provides.append(value.strip())
-            else:
+            if key != "provides":
                 fields[key] = value.strip()
-        elif in_provides:
+            elif value.strip():
+                provides.append(value.strip())
+            continue
+        if in_provides:
             match = re.match(r"\s*--\s?(.*?)\s*$", line)
             if match and match.group(1):
                 provides.append(match.group(1))
             else:
                 in_provides = False
-    if not fields.get("version") or not fields.get("description"):
-        raise IndexError("main script is missing @version or @description")
-    return fields, provides
+    if not fields.get("version"):
+        raise IndexError("main script is missing @version metadata")
+    if not fields.get("description"):
+        raise IndexError("main script is missing @description metadata")
+    return {**fields, "provides": provides}
 
 
-def blob(commit: str, path: PurePosixPath) -> str:
-    return bytes(git("show", f"{commit}:{path.as_posix()}", binary=True)).decode("utf-8-sig")
+def tracked_paths(commit: str) -> list[str]:
+    data = git("ls-tree", "-r", "--name-only", "-z", commit, text=False)
+    return [path.decode("utf-8") for path in data.split(b"\0") if path]
 
 
-def sources(commit: str, rules: list[str]) -> list[tuple[str, str]]:
-    paths = bytes(git("ls-tree", "-rz", "--name-only", commit, binary=True)).split(b"\0")
-    paths = [path.decode() for path in paths if path]
-    result = []
-    for rule in rules:
+def expand_provides(manifest: dict, paths: list[str]) -> tuple[str, list[tuple[str, str]]]:
+    main_path = MAIN_SCRIPT
+    files: dict[str, str] = {}
+    for rule in manifest["provides"]:
+        main_match = re.match(r"^\[main\]\s+(.+)$", rule)
+        if main_match:
+            raw = (ROOT / main_match.group(1)).as_posix()
+            if raw == ROOT.as_posix() or raw == f"{ROOT.as_posix()}/.":
+                main_path = MAIN_SCRIPT
+            else:
+                candidates = [path for path in paths if path == raw]
+                if len(candidates) != 1:
+                    raise IndexError(f"@provides [main] path did not match one tracked file: {rule}")
+                main_path = candidates[0]
+            continue
+
         if rule.startswith("["):
             continue
-        source, _, destination = rule.partition(">")
-        pattern = (ROOT / source.strip()).as_posix()
-        for path in paths:
-            if fnmatch.fnmatchcase(path, pattern):
-                target = (PurePosixPath(destination.strip()) / PurePosixPath(path).name).as_posix() if destination else str(PurePosixPath(path).relative_to(ROOT))
-                result.append((target, path))
-    return sorted(set(result))
+        if ">" in rule:
+            source_pattern, destination = (part.strip() for part in rule.split(">", 1))
+        else:
+            source_pattern, destination = rule.strip(), ""
+
+        source_glob = posixpath.normpath((ROOT / source_pattern).as_posix())
+        matches = [path for path in paths if fnmatch.fnmatchcase(path, source_glob)]
+        for source in matches:
+            if destination:
+                dest = PurePosixPath(destination)
+                package_path = (dest / PurePosixPath(source).name).as_posix()
+            else:
+                package_path = PurePosixPath(os.path.relpath(source, ROOT.as_posix()).replace("\\", "/")).as_posix()
+            files[package_path] = source
+
+    return main_path, sorted(files.items())
 
 
 def raw_url(remote: str, commit: str, path: str) -> str:
-    remote = remote.removesuffix(".git").rstrip("/")
+    remote = remote.strip()
     if remote.startswith("git@github.com:"):
         remote = "https://github.com/" + remote.split(":", 1)[1]
+    elif remote.startswith("ssh://git@github.com/"):
+        remote = "https://github.com/" + remote.split("github.com/", 1)[1]
+    remote = remote.removesuffix(".git").rstrip("/")
     if not remote.startswith("https://github.com/"):
-        raise IndexError("origin must be a GitHub URL")
-    return f"{remote}/raw/{commit}/{quote(path, safe='/@:+-._')}"
+        raise IndexError(f"origin must be a GitHub HTTPS or SSH URL, got: {remote}")
+    return f"{remote}/raw/{commit}/{quote(path, safe='/@:+-._') }"
 
 
-def build() -> bytes:
-    remote = str(git("remote", "get-url", "origin")).strip()
-    commits = str(git("log", "--follow", "--reverse", "--format=%H", "--", MAIN.as_posix())).splitlines()
-    root = ET.Element("index", {"version": "1", "name": "Yamaha MX Styles"})
-    category = ET.SubElement(root, "category", {"name": "Scripts/Yamaha_Style_Manager"})
-    package = ET.SubElement(category, "reapack", {
-        "name": MAIN.name, "type": "script", "desc": "Yamaha STY Style Manager & Live Rig Builder",
-    })
-    metadata = ET.SubElement(package, "metadata")
-    ET.SubElement(metadata, "description").text = "Browse Yamaha STY files and create an MX88/Launchpad live rig."
-    seen, last_commit = set(), ""
+def version_commits() -> list[tuple[str, dict]]:
+    commits = str(git("log", "--follow", "--reverse", "--format=%H", "--", MAIN_SCRIPT)).splitlines()
+    versions: set[str] = set()
+    result: list[tuple[str, dict]] = []
     for commit in commits:
-        fields, rules = manifest(blob(commit, MAIN))
-        if fields["version"] in seen:
+        try:
+            manifest = parse_manifest(read_blob(commit, MAIN_SCRIPT))
+        except IndexError:
             continue
-        seen.add(fields["version"])
-        date = str(git("show", "-s", "--format=%aI", commit)).strip()
-        timestamp = datetime.fromisoformat(date.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        version = ET.SubElement(package, "version", {"name": fields["version"], "author": fields.get("author", ""), "time": timestamp})
-        ET.SubElement(version, "source", {"main": "main"}).text = raw_url(remote, commit, MAIN.as_posix())
-        for target, source in sources(commit, rules):
-            ET.SubElement(version, "source", {"file": target}).text = raw_url(remote, commit, source)
-        last_commit = commit
-    if not last_commit:
-        raise IndexError("no versioned script commits found")
-    root.set("commit", last_commit)
-    ET.indent(root, space="  ")
-    return b'<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="utf-8") + b"\n"
+        if manifest["version"] not in versions:
+            versions.add(manifest["version"])
+            result.append((commit, manifest))
+    if not result:
+        raise IndexError(f"no versioned manifests found in history for {MAIN_SCRIPT}")
+    return result
 
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def commit_info(commit: str) -> tuple[str, str]:
+    date = str(git("show", "-s", "--format=%aI", commit)).strip()
+    parsed = datetime.fromisoformat(date.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return parsed.isoformat(timespec="seconds").replace("+00:00", "Z"), str(git("show", "-s", "--format=%an", commit)).strip()
+
+
+def current_index() -> ET.Element:
+    path = os.path.join(repo_root(), INDEX_FILE)
+    try:
+        return ET.parse(path).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise IndexError(f"cannot read existing {INDEX_FILE}: {exc}") from exc
+
+
+def build_index() -> bytes:
+    root = current_index()
+    remote = str(git("remote", "get-url", "origin")).strip()
+    old_package = root.find("./category/reapack")
+    if old_package is None:
+        raise IndexError("existing index has no package entry to preserve metadata")
+
+    output = ET.Element("index", {"version": "1", "name": root.get("name", "ReaPack repository")})
+    category = ET.SubElement(output, "category", {"name": ROOT.as_posix()})
+    manifest_head = parse_manifest(read_blob(str(git("rev-parse", "HEAD")).strip(), MAIN_SCRIPT))
+    package = ET.SubElement(
+        category,
+        "reapack",
+        {"name": PurePosixPath(MAIN_SCRIPT).name, "type": "script", "desc": manifest_head["description"]},
+    )
+    old_metadata = old_package.find("metadata")
+    if old_metadata is not None:
+        package.append(copy.deepcopy(old_metadata))
+
+    latest_commit = ""
+    for commit, manifest in version_commits():
+        paths = tracked_paths(commit)
+        main_path, payload = expand_provides(manifest, paths)
+        time, author = commit_info(commit)
+        version = ET.SubElement(package, "version", {"name": manifest["version"], "author": manifest.get("author", author), "time": time})
+        source = ET.SubElement(version, "source", {"main": "main"})
+        source.text = raw_url(remote, commit, main_path)
+        for package_path, source_path in payload:
+            element = ET.SubElement(version, "source", {"file": package_path})
+            element.text = raw_url(remote, commit, source_path)
+        latest_commit = commit
+
+    output.set("commit", latest_commit)
+    ET.indent(output, space="  ")
+    return b'<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(output, encoding="utf-8") + b"\n"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="compare the committed index with generated output")
+    mode.add_argument("--scan", action="store_true", help="write index.xml from versioned Git history (default)")
+    parser.add_argument("--output", default=INDEX_FILE, help="index output path (default: index.xml)")
     args = parser.parse_args()
+
     try:
-        output = build()
-        path = os.path.join(ROOT_DIR, "index.xml")
+        generated = build_index()
+        output_path = os.path.join(repo_root(), args.output)
         if args.check:
-            return 0 if open(path, "rb").read() == output else 1
-        open(path, "wb").write(output)
+            with open(output_path, "rb") as handle:
+                current = handle.read()
+            if current != generated:
+                print(f"{args.output} is out of date; run python tools/reapack_index.py --scan", file=sys.stderr)
+                return 1
+            print(f"{args.output} matches versioned Git history.")
+            return 0
+        with open(output_path, "wb") as handle:
+            handle.write(generated)
+        print(f"Wrote {args.output} from {len(version_commits())} version commits.")
         return 0
-    except (OSError, IndexError) as error:
-        print(f"reapack_index: {error}", file=sys.stderr)
+    except (IndexError, OSError) as exc:
+        print(f"reapack_index: {exc}", file=sys.stderr)
         return 2
 
 
