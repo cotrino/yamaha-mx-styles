@@ -1,6 +1,6 @@
-﻿-- @description Yamaha STY Style Manager & Live Rig Builder
+-- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.2
+-- @version 1.0.3
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -199,18 +199,19 @@ local function draw_window()
     local changed
     changed, state.filter = reaper.ImGui_InputText(ctx, "Search", state.filter)
     reaper.ImGui_Separator(ctx)
-    reaper.ImGui_BeginChild(ctx, "StyleBrowser", -1, -80, true)
-    draw_file_tree()
-    reaper.ImGui_EndChild(ctx)
+    if reaper.ImGui_BeginChild(ctx, "StyleBrowser", -1, -80, reaper.ImGui_ChildFlags_Border and reaper.ImGui_ChildFlags_Border() or 1) then
+      draw_file_tree()
+      reaper.ImGui_EndChild(ctx)
+    end
     if state.status_is_error then reaper.ImGui_TextColored(ctx, 0xFF5555FF, state.status)
     else reaper.ImGui_Text(ctx, state.status) end
     if state.scan_error then reaper.ImGui_TextWrapped(ctx, state.scan_error) end
 
-    if state.show_config then reaper.ImGui_OpenPopup(ctx, "Configure Style Library") end
+    if state.show_config then reaper.ImGui_OpenPopup(ctx, "Configure Style Library"); state.show_config = false end
     if reaper.ImGui_BeginPopupModal(ctx, "Configure Style Library", true) then
       reaper.ImGui_TextWrapped(ctx, "Enter the root folder containing Yamaha .sty files.")
       local edited
-      edited, state.root = reaper.ImGui_InputText(ctx, "Folder", state.root, 1024)
+      edited, state.root = reaper.ImGui_InputText(ctx, "Folder", state.root)
       if reaper.ImGui_Button(ctx, "Save and Scan") then
         state.root = normalize_path(state.root)
         reaper.SetExtState(EXT_SECTION, EXT_KEY, state.root, true)
