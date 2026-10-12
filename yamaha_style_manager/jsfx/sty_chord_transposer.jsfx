@@ -5,28 +5,48 @@ tags:MIDI Yamaha arranger transpose
 
 slider1:0<-24,24,1>Additional transpose semitones
 
+@init
+root = 60;
+// held[0..127]: keys currently down on the chord keyboard (channel 1).
+// sounding[ch*128+note]: pitch actually sent for a note-on, so its note-off always matches
+// even if the chord changes meanwhile (prevents stuck/echoing notes).
+held = 0;
+sounding = 128;
+
 @block
-while (
-  midirecv(offset, msg1, msg23) ? (
+while (midirecv(offset, msg1, msg23)) (
     status = msg1 & $xF0;
     channel = msg1 & $x0F;
     note = msg23 & $x7F;
     velocity = (msg23 / 256) | 0;
-    // Channel 1 is the live chord source. Its lowest held note is the style root.
+    // Channel 1 is the live chord source. The chord is LATCHED: the root only changes when a new key is
+    // pressed, so it survives key release, loops, seeks and the all-notes-off REAPER sends on them.
     channel == 0 && (status == $x90 || status == $x80) ? (
-      status == $x90 && velocity > 0 ? held[note] = 1 : held[note] = 0;
-      root = 60;
-      candidate = 0;
-      loop(128,
-        held[candidate] ? (root = candidate; candidate = 128) : candidate += 1;
-      );
+      status == $x90 && velocity > 0 ? (
+        held[note] = 1;
+        root = note;
+        candidate = note;
+        loop(note,
+          candidate -= 1;
+          held[candidate] ? root = candidate;
+        );
+      ) : held[note] = 0;
+    ) : channel == 0 && status == $xB0 ? (
+      // Swallow controller data from the chord keyboard (e.g. all-notes-off) so it never reaches the parts.
+      0;
     ) : (
       // Channels 9-16 contain the imported Yamaha accompaniment parts.
       (channel >= 8 && (status == $x90 || status == $x80)) ? (
-        note = min(127, max(0, note + root - 60 + slider1));
+        slot = sounding + channel * 128 + note;
+        status == $x90 && velocity > 0 ? (
+          slot[0] = min(127, max(0, note + root - 60 + slider1)) + 1;
+        );
+        slot[0] > 0 ? (
+          note = slot[0] - 1;
+          status == $x80 || velocity == 0 ? slot[0] = 0;
+        ) : note = min(127, max(0, note + root - 60 + slider1));
         msg23 = (msg23 & $xFFFFFF00) | note;
       );
       midisend(offset, msg1, msg23);
     );
-  );
 );

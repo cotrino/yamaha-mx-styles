@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.1.0
+-- @version 1.1.1
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -312,6 +312,7 @@ local function draw_window()
         if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
       end
     end    if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
+      reaper.ImGui_TextWrapped(ctx, "The Launchpad has two ports (MIDI and MIDIIN2/MIDIOUT2): both are enabled in REAPER and both are used automatically for pad presses and LEDs. Last Launchpad message seen: " .. (Launchpad.last_seen or "none yet (press a pad in USER mode)"))
       local resolved, _, lists = current_devices()
       for _, slot in ipairs(DEVICE_SLOTS) do
         device_selector(slot, lists[slot.outputs == true], resolved[slot.key])

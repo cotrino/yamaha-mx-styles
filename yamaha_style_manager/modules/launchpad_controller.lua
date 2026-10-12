@@ -46,9 +46,23 @@ local function input_named(name)
   end
 end
 
-local function set_pad(index, color)
-  if Launchpad.output then reaper.StuffMIDIMessage(16 + Launchpad.output, 0x90, pad_note(index), color) end
+-- The Launchpad exposes two ports ("... MIDI" and "MIDIIN2/MIDIOUT2 (...)"); LEDs are driven on all of them and
+-- pad presses are read from all of them, because which one carries what depends on the mode and OS driver.
+local function matching_ports(count, getter)
+  local ports = {}
+  for id = 0, count - 1 do
+    local ok, name = getter(id, "")
+    local lower = ok and name and name:lower() or ""
+    if lower:find("launchpad", 1, true) or lower:find("lpmini", 1, true) then ports[#ports + 1] = id end
+  end
+  return ports
 end
+
+local function send_led(status, note, value)
+  for _, id in ipairs(Launchpad.outputs or {}) do reaper.StuffMIDIMessage(16 + id, status, note, value) end
+end
+
+local function set_pad(index, color) send_led(0x90, pad_note(index), color) end
 
 local function collect_regions()
   local regions = {}
@@ -68,6 +82,20 @@ function Launchpad.setup(folder, region_count, devices, rig, mapper)
   reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "[MIDI] Launchpad Controller", true)
   Launchpad.output = devices.launchpad_output or output_named("Launchpad") or output_named("LPMini")
   Launchpad.input = devices.launchpad_input or input_named("Launchpad") or input_named("LPMini")
+  Launchpad.outputs = matching_ports(reaper.GetNumMIDIOutputs(), reaper.GetMIDIOutputName)
+  Launchpad.inputs = matching_ports(reaper.GetNumMIDIInputs(), reaper.GetMIDIInputName)
+  if Launchpad.output then
+    local known = false
+    for _, id in ipairs(Launchpad.outputs) do if id == Launchpad.output then known = true end end
+    if not known then Launchpad.outputs[#Launchpad.outputs + 1] = Launchpad.output end
+  end
+  if Launchpad.input then
+    local known = false
+    for _, id in ipairs(Launchpad.inputs) do if id == Launchpad.input then known = true end end
+    if not known then Launchpad.inputs[#Launchpad.inputs + 1] = Launchpad.input end
+  end
+  Launchpad.input_set = {}
+  for _, id in ipairs(Launchpad.inputs) do Launchpad.input_set[id] = true end
   Launchpad.regions = collect_regions()
   Launchpad.voices = rig and rig.voices
   Launchpad.parts = rig and rig.children or {}
@@ -81,10 +109,10 @@ function Launchpad.setup(folder, region_count, devices, rig, mapper)
     if i <= MAX_PADS then set_pad(i, color_for(region.name)) end
   end
   Launchpad.draw_controls()
-  Launchpad.active = (Launchpad.input ~= nil or Launchpad.nano_input ~= nil) and #Launchpad.regions > 0
+  Launchpad.active = (#Launchpad.inputs > 0 or Launchpad.nano_input ~= nil) and #Launchpad.regions > 0
   if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
   return {
-    message = (Launchpad.output and Launchpad.input) and
+    message = (#Launchpad.inputs > 0 and #Launchpad.outputs > 0) and
       "Launchpad ready: press its USER button; pads = sections." or
       "Launchpad input/output not detected; MIDI region controls remain inactive.",
   }
@@ -92,7 +120,7 @@ end
 
 function Launchpad.shutdown()
   for pad = 1, MAX_PADS do set_pad(pad, COLOR_OFF) end
-  if Launchpad.output then for note = 92, 99 do reaper.StuffMIDIMessage(16 + Launchpad.output, 0x90, note, 0) end end
+  for note = 92, 99 do send_led(0x90, note, 0) end
   Launchpad.active = false
 end
 
@@ -103,9 +131,7 @@ local CONTROL_COLORS = { play = 21, autofill = 13, ending = 5, voices = 45, temp
 Launchpad.auto_fill = true
 Launchpad.cur, Launchpad.last_main, Launchpad.after, Launchpad.pending, Launchpad.holdoff = nil, nil, nil, nil, 0
 
-local function set_control(note, color)
-  if Launchpad.output then reaper.StuffMIDIMessage(16 + Launchpad.output, 0x90, note, color) end
-end
+local function set_control(note, color) send_led(0x90, note, color) end
 
 function Launchpad.draw_controls()
   for note, name in pairs(CONTROL) do
@@ -194,9 +220,7 @@ function Launchpad.trigger(index)
     if fill then target, after = fill, index end
   end
   Launchpad.pending = { target = target, after = after, final = index, at = next_bar(reaper.GetPlayPosition()) }
-  if Launchpad.output and index <= MAX_PADS then
-    reaper.StuffMIDIMessage(16 + Launchpad.output, 0x92, pad_note(index), color_for(region.name))
-  end
+  if index <= MAX_PADS then send_led(0x92, pad_note(index), color_for(region.name)) end
 end
 
 function Launchpad.step(direction)
@@ -274,7 +298,8 @@ local function update_arranger()
       if region and position >= region.finish - LOOKAHEAD then
         local kind = kind_of(region.name)
         if kind == "Main" then
-          go(Launchpad.cur)
+          -- REAPER's own loop repeats Mains; only re-seek if looping was lost.
+          if reaper.GetSetRepeat(-1) == 0 then go(Launchpad.cur) end
         elseif kind == "Ending" then
           reaper.OnStopButton()
           local main = Launchpad.last_main
@@ -333,10 +358,13 @@ function Launchpad.poll()  if not Launchpad.active then return end
     if event_id == Launchpad.last_event then break end
     if event_index == 0 then Launchpad.last_event = event_id end
     local input_id = flags and (flags & 0xFFFF)
+    if input_id and Launchpad.input_set and Launchpad.input_set[input_id] and message and #message >= 3 then
+      Launchpad.last_seen = string.format('port %d: %02X %02X %02X', input_id, message:byte(1), message:byte(2), message:byte(3))
+    end
     if input_id == Launchpad.nano_input and message and #message >= 3 and (message:byte(1) & 0xF0) == 0xB0 then
       nano_message(message:byte(2), message:byte(3))
     end
-    if input_id == Launchpad.input and message and #message >= 3
+    if input_id and Launchpad.input_set and Launchpad.input_set[input_id] and message and #message >= 3
       and (message:byte(1) & 0xF0) == 0x90 and message:byte(3) > 0 then
       local note = message:byte(2)
       local index = note_to_index(note)

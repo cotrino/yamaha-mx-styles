@@ -44,6 +44,9 @@ local function insert_events(take, events, channel, ppq, role, markers)
   reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, mx.msb)
   reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, mx.lsb)
   reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, mx.prg, 0)
+  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 91, 40)
+  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 93, 0)
+  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 94, 0)
   -- Repeat the voice at every section start so jumping to a region still selects the right sound.
   for _, marker in ipairs(markers or {}) do
     local tick = scale(marker.tick)
@@ -69,8 +72,9 @@ local function insert_events(take, events, channel, ppq, role, markers)
             chan, event.data1, note.velocity, true)
         end
       elseif event_type == 0xB0 then
-        -- Bank/program were already sent at the start of the item.
-        if event.data1 ~= 0 and event.data1 ~= 32 then
+        -- Bank/program were sent at the start of the item; effect sends (91/93/94) are replaced by fixed levels
+        -- because the style's values drive the MX88 variation effect (delay) and make parts echo.
+        if event.data1 ~= 0 and event.data1 ~= 32 and event.data1 ~= 91 and event.data1 ~= 93 and event.data1 ~= 94 then
           reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, event.data1, event.data2)
         end
       elseif event_type == 0xC0 then
@@ -113,8 +117,36 @@ function Mapper.send_voices(output, voices)
   end
 end
 
+-- A previous import keeps playing to the same MX88 channels, which sounds like looping background notes
+-- and a doubled arrangement, so every import replaces earlier rigs, controller tracks and regions.
+function Mapper.remove_previous_rigs()
+  local removed = false
+  for index = reaper.CountTracks(0) - 1, 0, -1 do
+    local track = reaper.GetTrack(0, index)
+    local _, name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+    if name:find("[YAMAHA STY RIG]", 1, true) == 1 then
+      local depth = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH")
+      local last = index
+      if depth == 1 then
+        local level = 1
+        while level > 0 and last + 1 < reaper.CountTracks(0) do
+          last = last + 1
+          level = level + reaper.GetMediaTrackInfo_Value(reaper.GetTrack(0, last), "I_FOLDERDEPTH")
+        end
+      end
+      for i = last, index, -1 do reaper.DeleteTrack(reaper.GetTrack(0, i)) end
+      removed = true
+    elseif name == "[MIDI] Yamaha MX88 Chord Input" or name == "[MIDI] Launchpad Controller" then
+      reaper.DeleteTrack(track)
+    end
+  end
+  if removed then
+    for index = reaper.CountProjectMarkers(0) - 1, 0, -1 do reaper.DeleteProjectMarkerByIndex(0, index) end
+  end
+end
+
 function Mapper.create_rig(style, style_path, transposer_path, devices)
-  local insert_at = reaper.CountTracks(0)
+  Mapper.remove_previous_rigs()  local insert_at = reaper.CountTracks(0)
   reaper.InsertTrackAtIndex(insert_at, true)
   local folder = reaper.GetTrack(0, insert_at)
   reaper.GetSetMediaTrackInfo_String(folder, "P_NAME", "[YAMAHA STY RIG] - " .. basename(style_path), true)
@@ -148,7 +180,7 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
   end
   for _, track in ipairs(rig.children) do
     reaper.CreateTrackSend(input, track)
-    reaper.TrackFX_AddByName(track, FX_NAME, false, -1)
+    if reaper.TrackFX_AddByName(track, FX_NAME, false, -1) < 0 then rig.fx_missing = true end
   end
   return rig
 end
