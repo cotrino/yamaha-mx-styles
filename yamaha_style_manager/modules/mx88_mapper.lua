@@ -141,6 +141,11 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
   reaper.InsertTrackAtIndex(insert_at, true)
   local input = reaper.GetTrack(0, insert_at)
   reaper.GetSetMediaTrackInfo_String(input, "P_NAME", "[MIDI] Yamaha MX88 Chord Input", true)
+  if devices.yamaha_input then
+    reaper.SetMediaTrackInfo_Value(input, "I_RECINPUT", 4096 | (devices.yamaha_input << 5))
+    reaper.SetMediaTrackInfo_Value(input, "I_RECMON", 1)
+    reaper.SetMediaTrackInfo_Value(input, "I_RECARM", 1)
+  end
   for _, track in ipairs(rig.children) do
     reaper.CreateTrackSend(input, track)
     reaper.TrackFX_AddByName(track, FX_NAME, false, -1)

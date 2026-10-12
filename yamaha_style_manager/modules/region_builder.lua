@@ -2,23 +2,30 @@
 local reaper = reaper
 local Regions = {}
 
-local COLORS = {
-  ["Intro"] = 0x00A5FFFF, ["Main"] = 0x00CC44FF, ["Fill In"] = 0xFF8800FF,
-  ["Ending"] = 0xEE3333FF, ["Break"] = 0xAA55FFFF,
+-- One table drives both the REAPER region colours and the Launchpad pad colours (pad = Launchpad palette index).
+Regions.SECTIONS = {
+  { kind = "Intro", prefix = "Intro", rgb = { 60, 120, 255 }, pad = 45 },
+  { kind = "Main", prefix = "Main", rgb = { 32, 208, 64 }, pad = 21 },
+  { kind = "Fill", prefix = "Fill", rgb = { 255, 128, 0 }, pad = 9 },
+  { kind = "Break", prefix = "Break", rgb = { 255, 80, 176 }, pad = 53 },
+  { kind = "Ending", prefix = "Ending", rgb = { 224, 32, 32 }, pad = 5 },
 }
 
-local function color_for(name)
-  for prefix, color in pairs(COLORS) do
-    if name:find(prefix, 1, true) == 1 then return color | 0x1000000 end
+function Regions.section_for(name)
+  for _, section in ipairs(Regions.SECTIONS) do
+    if name:find(section.prefix, 1, true) == 1 then return section end
   end
-  return 0
 end
 
+local function color_for(name)
+  local section = Regions.section_for(name)
+  if not section then return 0 end
+  return reaper.ColorToNative(section.rgb[1], section.rgb[2], section.rgb[3]) | 0x1000000
+end
 function Regions.create(markers, end_tick, ppq)
   if reaper.SNM_SetIntConfigVar then
     reaper.SNM_SetIntConfigVar("seekplay", 1)
-    reaper.SNM_SetIntConfigVar("smoothseek", 1)
-    reaper.SNM_SetIntConfigVar("smoothseek_mode", 2)
+    reaper.SNM_SetIntConfigVar("smoothseek", 0)
   end
   local count = 0
   for index, marker in ipairs(markers) do

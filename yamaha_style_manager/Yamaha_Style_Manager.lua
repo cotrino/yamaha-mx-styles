@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.8
+-- @version 1.1.0
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -285,8 +285,8 @@ local function draw_window()
     if reaper.ImGui_CollapsingHeader(ctx, "Launchpad Mini MK3 / nanoKONTROL2 - how to use") then
       reaper.ImGui_TextWrapped(ctx, "SETUP: connect the Launchpad (use its 'LPMiniMK3 MIDI' port, not the DAW port) and the nanoKONTROL2 in CC mode, select them below, and double-click a style. The window closes and the script keeps running in the background (run it again to open the window).")
       reaper.ImGui_Separator(ctx)
-      reaper.ImGui_TextWrapped(ctx, "LAUNCHPAD: press the USER button (Custom mode 3, the lighting Drum Rack layout; NOT Drums or Keys). Only the LEFT 4x8 block of pads is used: one pad per style section, section 1 = top-left pad, reading left to right then downward. Colours: blue = Intro, green = Main, orange = Fill In, pink = Break, red = Ending; the section that is playing turns white. Press a pad to jump to that section (playback starts if stopped) and the MX88 voices are re-sent. The right 4x8 block is unused.")
-      local regions = Launchpad.regions or {}
+      reaper.ImGui_TextWrapped(ctx, "LAUNCHPAD: press the USER button (Custom mode 3, the lighting Drum Rack layout; NOT Drums or Keys). LEFT 4x8 block = one pad per style section (section 1 = top-left, left to right then downward). Pad colours match the REAPER region colours: blue = Intro, green = Main, orange = Fill In, pink = Break, red = Ending. The playing section turns white; a pad you pressed pulses until the section changes at the next bar line. Main sections loop until you press another pad. Fill In and Break play once and return to the last Main (with Auto-fill on, changing Main A to Main B first plays Fill In AA). Intro plays once, then loops the matching Main. Ending plays once and stops.")
+      reaper.ImGui_TextWrapped(ctx, "RIGHT 4x8 block (top row first): PLAY/STOP (green), AUTO-FILL on/off (yellow = on), ENDING (red), RESEND MX88 voices (blue); second row: TEMPO - and TEMPO + (cyan, 2 BPM), PREVIOUS and NEXT section (pink).")      local regions = Launchpad.regions or {}
       for row = 1, 8 do
         local names = {}
         for col = 1, 4 do
@@ -296,7 +296,18 @@ local function draw_window()
         if #names > 0 then reaper.ImGui_BulletText(ctx, "Pad row " .. row .. " (from top): " .. table.concat(names, " | ")) end
       end
       reaper.ImGui_Separator(ctx)
-      reaper.ImGui_TextWrapped(ctx, "NANOKONTROL2 (mixer for the 8 rig parts, channels 9-16, left to right): sliders = volume, knobs = pan, S = solo, M = mute, R = re-send that part's voice to the MX88. Transport: PLAY / STOP; TRACK < > or MARKER < > = previous / next section.")
+      reaper.ImGui_TextWrapped(ctx, "NANOKONTROL2 (mixer for the 8 rig parts, channels 9-16, left to right): sliders = volume, knobs = pan, S = solo, M = mute, R = re-send that part's voice to the MX88. Transport: PLAY / STOP; TRACK < > or MARKER < > = previous / next section; REW / FF = tempo -/+ 2 BPM; REC = Ending; CYCLE = Auto-fill on/off; SET = resend voices. The first track of the rig, '[MIDI] Yamaha MX88 Chord Input', is record-armed from the MX88 keyboard input to play chords.")
+      reaper.ImGui_Separator(ctx)
+      if reaper.ImGui_Button(ctx, "Play / Stop") then Launchpad.play_stop() end
+      reaper.ImGui_SameLine(ctx)
+      if reaper.ImGui_Button(ctx, "Ending") then Launchpad.trigger_ending() end
+      reaper.ImGui_SameLine(ctx)
+      if reaper.ImGui_Button(ctx, "Tempo -") then Launchpad.nudge_tempo(-2) end
+      reaper.ImGui_SameLine(ctx)
+      if reaper.ImGui_Button(ctx, "Tempo +") then Launchpad.nudge_tempo(2) end
+      reaper.ImGui_SameLine(ctx)
+      local toggled, auto_fill = reaper.ImGui_Checkbox(ctx, "Auto-fill between Mains", Launchpad.auto_fill)
+      if toggled then Launchpad.auto_fill = auto_fill; Launchpad.draw_controls() end
       if reaper.ImGui_Button(ctx, "Resend MX88 voices now") then
         if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
       end
