@@ -178,10 +178,22 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
     reaper.SetMediaTrackInfo_Value(input, "I_RECMON", 1)
     reaper.SetMediaTrackInfo_Value(input, "I_RECARM", 1)
   end
+  local split = tonumber(reaper.GetExtState("YamahaStyleManager", "Split")) or 60
   for _, track in ipairs(rig.children) do
-    reaper.CreateTrackSend(input, track)
-    if reaper.TrackFX_AddByName(track, FX_NAME, false, -1) < 0 then rig.fx_missing = true end
+    local send = reaper.CreateTrackSend(input, track)
+    reaper.SetTrackSendInfo_Value(input, 0, send, "I_SENDMODE", 1) -- pre-FX: parts hear the whole keyboard
+    local fx = reaper.TrackFX_AddByName(track, FX_NAME, false, -1)
+    if fx < 0 then rig.fx_missing = true else reaper.TrackFX_SetParam(track, fx, 1, split) end
   end
+  -- The keyboard track keeps only the right hand (soloist) for the MX88; the left hand just picks chords.
+  local input_fx = reaper.TrackFX_AddByName(input, FX_NAME, false, -1)
+  if input_fx >= 0 then
+    reaper.TrackFX_SetParam(input, input_fx, 1, split)
+    reaper.TrackFX_SetParam(input, input_fx, 2, 1)
+  end
+  rig.input, rig.input_fx = input, input_fx
+  if output then reaper.SetMediaTrackInfo_Value(input, "I_MIDIHWOUT", (output << 5) | 1) end
+  rig.voices[#rig.voices + 1] = { chan = 0, msb = 0, lsb = 0, prg = tonumber(reaper.GetExtState("YamahaStyleManager", "SoloVoice")) or 65, solo = true }
   return rig
 end
 

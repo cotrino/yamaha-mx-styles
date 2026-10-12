@@ -1,52 +1,100 @@
 // @noindex
-desc:Yamaha STY live chord transposer
+desc:Yamaha STY live chord transposer / split
 author:Jose M. Cotrino
 tags:MIDI Yamaha arranger transpose
 
 slider1:0<-24,24,1>Additional transpose semitones
+slider2:60<0,127,1>Split point (keys below = chord, keys from here up = soloist)
+slider3:0<0,1,1{Style part,Chord keyboard track}>Mode
+slider4:0<0,11,1>Chord root (pitch class, read only)
+slider5:1<0,4095,1>Chord notes relative to root (bit mask, read only)
+slider6:48<0,127,1>Chord bass note (read only)
 
 @init
-root = 60;
-// held[0..127]: keys currently down on the chord keyboard (channel 1).
-// sounding[ch*128+note]: pitch actually sent for a note-on, so its note-off always matches
-// even if the chord changes meanwhile (prevents stuck/echoing notes).
+// held[0..127]: chord-zone keys down. solo[0..127]: soloist notes sounding. sounding[]: pitch sent for each part
+// note-on, so a note-off always matches even if the chord changed meanwhile (no stuck notes).
 held = 0;
-sounding = 128;
+solo = 128;
+sounding = 256;
+root_pc = 0;
+mask = 1;
+quality = 0;
+
+function recompute() local(n, count, lowest, rel) (
+  count = 0; lowest = 128;
+  n = 0;
+  loop(128,
+    held[n] ? ( count += 1; lowest > n ? lowest = n; );
+    n += 1;
+  );
+  // The chord is latched: releasing every key keeps the last chord, so it survives loops and seeks.
+  count > 0 ? (
+    root_pc = lowest % 12;
+    rel = 0;
+    n = 0;
+    loop(128,
+      held[n] ? rel |= 2 ^ ((n % 12 - root_pc + 12) % 12);
+      n += 1;
+    );
+    mask = rel;
+    slider4 = root_pc;
+    slider5 = rel;
+    slider6 = lowest;
+    // 0 major, 1 minor, 2 dominant 7th, 3 sus4, 4 diminished
+    quality = 0;
+    (rel & 8) && !(rel & 16) ? quality = 1;
+    (rel & 16) && (rel & 1024) ? quality = 2;
+    !(rel & 8) && !(rel & 16) && (rel & 32) ? quality = 3;
+    (rel & 8) && (rel & 64) && !(rel & 128) ? quality = 4;
+  );
+);
+
+// Maps a style note (written in C major) to the current chord: shifts to the chord root and bends the
+// 3rd / 5th / 7th to the chord quality, like an arranger's note transposition table.
+function map_note(n) local(pc, oct, out) (
+  pc = n % 12;
+  oct = n - pc;
+  out = pc;
+  quality == 1 ? ( pc == 4 ? out = 3; pc == 11 ? out = 10; );
+  quality == 2 ? ( pc == 11 ? out = 10; );
+  quality == 3 ? ( pc == 4 ? out = 5; );
+  quality == 4 ? ( pc == 4 ? out = 3; pc == 7 ? out = 6; pc == 11 ? out = 10; );
+  out += oct + (root_pc > 6 ? root_pc - 12 : root_pc) + slider1;
+  min(127, max(0, out));
+);
 
 @block
 while (midirecv(offset, msg1, msg23)) (
-    status = msg1 & $xF0;
-    channel = msg1 & $x0F;
-    note = msg23 & $x7F;
-    velocity = (msg23 / 256) | 0;
-    // Channel 1 is the live chord source. The chord is LATCHED: the root only changes when a new key is
-    // pressed, so it survives key release, loops, seeks and the all-notes-off REAPER sends on them.
-    channel == 0 && (status == $x90 || status == $x80) ? (
-      status == $x90 && velocity > 0 ? (
-        held[note] = 1;
-        root = note;
-        candidate = note;
-        loop(note,
-          candidate -= 1;
-          held[candidate] ? root = candidate;
-        );
-      ) : held[note] = 0;
-    ) : channel == 0 && status == $xB0 ? (
-      // Swallow controller data from the chord keyboard (e.g. all-notes-off) so it never reaches the parts.
-      0;
-    ) : (
-      // Channels 9-16 contain the imported Yamaha accompaniment parts.
-      (channel >= 8 && (status == $x90 || status == $x80)) ? (
-        slot = sounding + channel * 128 + note;
-        status == $x90 && velocity > 0 ? (
-          slot[0] = min(127, max(0, note + root - 60 + slider1)) + 1;
-        );
-        slot[0] > 0 ? (
-          note = slot[0] - 1;
-          status == $x80 || velocity == 0 ? slot[0] = 0;
-        ) : note = min(127, max(0, note + root - 60 + slider1));
-        msg23 = (msg23 & $xFFFFFF00) | note;
+  status = msg1 & $xF0;
+  channel = msg1 & $x0F;
+  note = msg23 & $x7F;
+  velocity = (msg23 / 256) | 0;
+  is_note = status == $x90 || status == $x80;
+  is_on = status == $x90 && velocity > 0;
+  split = slider2;
+  keep = 1;
+  // Channel 1 is the live keyboard.
+  channel == 0 ? (
+    is_note ? (
+      is_on ? (
+        note < split ? ( held[note] = 1; recompute(); keep = 0; )
+        : ( solo[note] = 1; keep = slider3 == 1; );
+      ) : (
+        held[note] = 0; // the chord only changes on a new key press, never on release
+        solo[note] ? ( solo[note] = 0; keep = slider3 == 1; ) : keep = 0;
       );
-      midisend(offset, msg1, msg23);
+    ) : keep = slider3 == 1; // wheels / sustain only reach the soloist voice
+  ) : (
+    // Imported accompaniment: channels 11-16 follow the chord, drum channels 9-10 never transpose.
+    slider3 == 0 && channel >= 10 && is_note ? (
+      slot = sounding + channel * 128 + note;
+      is_on ? slot[0] = map_note(note) + 1;
+      slot[0] > 0 ? (
+        note = slot[0] - 1;
+        !is_on ? slot[0] = 0;
+      ) : note = map_note(note);
+      msg23 = (msg23 & $xFFFFFF00) | note;
     );
+  );
+  keep ? midisend(offset, msg1, msg23);
 );
