@@ -4,14 +4,14 @@ local Mapper = {}
 local VoiceMap = require("voice_map")
 
 local PARTS = {
-  { channel = 9, name = "Ch 9: Rhythm 2 (Percussion)", drum = true },
-  { channel = 10, name = "Ch 10: Rhythm 1 (Drums)", drum = true },
-  { channel = 11, name = "Ch 11: Bass" },
-  { channel = 12, name = "Ch 12: Chord 1" },
-  { channel = 13, name = "Ch 13: Chord 2" },
-  { channel = 14, name = "Ch 14: Pad / Strings" },
-  { channel = 15, name = "Ch 15: Phrase 1" },
-  { channel = 16, name = "Ch 16: Phrase 2" },
+  { channel = 9, name = "Ch 9: Rhythm 2 (Percussion)", role = "drums" },
+  { channel = 10, name = "Ch 10: Rhythm 1 (Drums)", role = "drums" },
+  { channel = 11, name = "Ch 11: Bass", role = "bass" },
+  { channel = 12, name = "Ch 12: Chord 1", role = "chord1" },
+  { channel = 13, name = "Ch 13: Chord 2", role = "chord2" },
+  { channel = 14, name = "Ch 14: Pad / Strings", role = "pad" },
+  { channel = 15, name = "Ch 15: Phrase 1", role = "phrase1" },
+  { channel = 16, name = "Ch 16: Phrase 2", role = "phrase2" },
 }
 
 local function basename(path)
@@ -27,11 +27,10 @@ end
 
 local REAPER_PPQ = 960
 
-local function insert_events(take, events, channel, ppq, drum)
+local function insert_events(take, events, channel, ppq, role, markers)
   local chan = channel - 1
   local function scale(tick) return math.floor(tick * REAPER_PPQ / ppq + 0.5) end
-  -- Use the voice (bank MSB/LSB + program) the style itself selects on this channel,
-  -- so the MX88 plays the right sound; fall back to a generic bank only if absent.
+  -- Read the voice the style selects on this channel, then translate it to an MX88 voice for the part's role.
   local voice = {}
   for _, event in ipairs(events) do
     if (event.status & 0x0F) == chan then
@@ -41,10 +40,19 @@ local function insert_events(take, events, channel, ppq, drum)
       elseif kind == 0xC0 and voice.prg == nil then voice.prg = event.data1 end
     end
   end
-  local mx = VoiceMap.resolve(voice, drum)
+  local mx = VoiceMap.resolve(voice, role)
   reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, mx.msb)
   reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, mx.lsb)
   reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, mx.prg, 0)
+  -- Repeat the voice at every section start so jumping to a region still selects the right sound.
+  for _, marker in ipairs(markers or {}) do
+    local tick = scale(marker.tick)
+    if tick > 2 then
+      reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 0, mx.msb)
+      reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 32, mx.lsb)
+      reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, mx.prg, 0)
+    end
+  end
   local open_notes = {}
   for _, event in ipairs(events) do
     if (event.status & 0x0F) == chan then
@@ -79,6 +87,7 @@ local function insert_events(take, events, channel, ppq, drum)
     end
   end
   reaper.MIDI_Sort(take)
+  return { chan = chan, msb = mx.msb, lsb = mx.lsb, prg = mx.prg }
 end
 local FX_NAME = "Yamaha/sty_chord_transposer.jsfx"
 
@@ -94,6 +103,16 @@ local function ensure_jsfx(source_path)
   if output then output:write(data) output:close() end
 end
 
+-- Immediately selects the mapped voices on the keyboard (bank MSB/LSB then program change).
+function Mapper.send_voices(output, voices)
+  if not output then return end
+  for _, v in ipairs(voices or {}) do
+    reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 0, v.msb)
+    reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 32, v.lsb)
+    reaper.StuffMIDIMessage(16 + output, 0xC0 | v.chan, v.prg, 0)
+  end
+end
+
 function Mapper.create_rig(style, style_path, transposer_path, devices)
   local insert_at = reaper.CountTracks(0)
   reaper.InsertTrackAtIndex(insert_at, true)
@@ -104,7 +123,7 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
   devices = devices or {}
   local output = devices.yamaha_output or midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
   ensure_jsfx(transposer_path)
-  local rig = { folder = folder, children = {}, output_found = output ~= nil }
+  local rig = { folder = folder, children = {}, voices = {}, output = output, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
   for index, part in ipairs(PARTS) do
     reaper.InsertTrackAtIndex(insert_at + index, true)
@@ -113,7 +132,8 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
     if output then reaper.SetMediaTrackInfo_Value(track, "I_MIDIHWOUT", (output << 5) | part.channel) end
     local item = reaper.CreateNewMIDIItemInProj(track, 0, length, false)
     local take = reaper.GetActiveTake(item)
-    insert_events(take, style.events, part.channel, style.ppq, part.drum)
+    local voice = insert_events(take, style.events, part.channel, style.ppq, part.role, style.markers)
+    rig.voices[#rig.voices + 1] = voice
     rig.children[#rig.children + 1] = track
   end
   reaper.SetMediaTrackInfo_Value(rig.children[#rig.children], "I_FOLDERDEPTH", -1)

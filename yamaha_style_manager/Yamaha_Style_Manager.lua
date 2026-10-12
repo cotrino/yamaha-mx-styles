@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.0.7
+-- @version 1.0.8
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -18,6 +18,9 @@ end
 
 local script_path = debug.getinfo(1, "S").source:match("^@?(.*[\\/])")
 package.path = script_path .. "modules/?.lua;" .. package.path
+
+-- REAPER keeps required modules between runs, so drop them to always load the installed version.
+for _, name in ipairs({ "sty_parser", "mx88_mapper", "voice_map", "region_builder", "launchpad_controller" }) do package.loaded[name] = nil end
 
 local Parser = require("sty_parser")
 local Mapper = require("mx88_mapper")
@@ -101,6 +104,7 @@ local DEVICE_SLOTS = {
   { key = "yamaha_input", label = "Yamaha input (keys / chords)", keywords = { "yamaha", "mx" } },
   { key = "launchpad_input", label = "Launchpad input", keywords = { "launchpad", "lpmini" }, any = true },
   { key = "launchpad_output", label = "Launchpad output (LEDs)", outputs = true, keywords = { "launchpad", "lpmini" }, any = true },
+  { key = "nano_input", label = "nanoKONTROL2 input (mixer)", keywords = { "nanokontrol" } },
 }
 local device_names = {}
 for _, slot in ipairs(DEVICE_SLOTS) do device_names[slot.key] = reaper.GetExtState(EXT_SECTION, slot.key) end
@@ -180,7 +184,7 @@ local function import_selected()  local file = selected_file()
   local imported, rig_or_error, region_count, launchpad = pcall(function()
     local rig = Mapper.create_rig(parsed_or_error, file.path, script_path .. "jsfx/sty_chord_transposer.jsfx", select(2, current_devices()))
     local region_count = Regions.create(parsed_or_error.markers, parsed_or_error.end_tick, parsed_or_error.ppq)
-    local launchpad = Launchpad.setup(rig.folder, region_count, select(2, current_devices()))
+    local launchpad = Launchpad.setup(rig.folder, region_count, select(2, current_devices()), rig, Mapper)
     return rig, region_count, launchpad
   end)
   reaper.PreventUIRefresh(-1)
@@ -268,13 +272,35 @@ local function draw_window()
     local can_import = state.selected ~= nil
     if not can_import then reaper.ImGui_BeginDisabled(ctx) end
     if reaper.ImGui_Button(ctx, "Import Style to Rig") then import_selected() end
+    reaper.ImGui_SameLine(ctx)
+    if reaper.ImGui_Button(ctx, "Resend MX88 Voices") then
+      if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
+    end
     if not can_import then reaper.ImGui_EndDisabled(ctx) end
 
     if state.open_hw then
       reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
       state.open_hw = false
     end
-    if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
+    if reaper.ImGui_CollapsingHeader(ctx, "Launchpad Mini MK3 / nanoKONTROL2 - how to use") then
+      reaper.ImGui_TextWrapped(ctx, "SETUP: connect the Launchpad (use its 'LPMiniMK3 MIDI' port, not the DAW port) and the nanoKONTROL2 in CC mode, select them below, and double-click a style. The window closes and the script keeps running in the background (run it again to open the window).")
+      reaper.ImGui_Separator(ctx)
+      reaper.ImGui_TextWrapped(ctx, "LAUNCHPAD: press the USER button (Custom mode 3, the lighting Drum Rack layout; NOT Drums or Keys). Only the LEFT 4x8 block of pads is used: one pad per style section, section 1 = top-left pad, reading left to right then downward. Colours: blue = Intro, green = Main, orange = Fill In, pink = Break, red = Ending; the section that is playing turns white. Press a pad to jump to that section (playback starts if stopped) and the MX88 voices are re-sent. The right 4x8 block is unused.")
+      local regions = Launchpad.regions or {}
+      for row = 1, 8 do
+        local names = {}
+        for col = 1, 4 do
+          local region = regions[(row - 1) * 4 + col]
+          if region then names[#names + 1] = region.name end
+        end
+        if #names > 0 then reaper.ImGui_BulletText(ctx, "Pad row " .. row .. " (from top): " .. table.concat(names, " | ")) end
+      end
+      reaper.ImGui_Separator(ctx)
+      reaper.ImGui_TextWrapped(ctx, "NANOKONTROL2 (mixer for the 8 rig parts, channels 9-16, left to right): sliders = volume, knobs = pan, S = solo, M = mute, R = re-send that part's voice to the MX88. Transport: PLAY / STOP; TRACK < > or MARKER < > = previous / next section.")
+      if reaper.ImGui_Button(ctx, "Resend MX88 voices now") then
+        if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
+      end
+    end    if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
       local resolved, _, lists = current_devices()
       for _, slot in ipairs(DEVICE_SLOTS) do
         device_selector(slot, lists[slot.outputs == true], resolved[slot.key])
@@ -322,15 +348,24 @@ if state.root == "" then
 end
 refresh_library()
 
+reaper.atexit(function() Launchpad.shutdown() end)
+
+local gui_open = true
 local function loop()
   Launchpad.poll()
-  local keep_open = draw_window()
-  if state.import_requested then
-    state.import_requested = false
-    import_selected()
-    if not state.status_is_error then keep_open = false end
+  if gui_open then
+    local keep_open = draw_window()
+    if state.import_requested then
+      state.import_requested = false
+      import_selected()
+      if not state.status_is_error then keep_open = false end
+    end
+    if not keep_open then
+      gui_open = false
+      if reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
+    end
   end
-  if keep_open then reaper.defer(loop)
-  elseif reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
+  -- Stay alive without a window while the Launchpad control is active.
+  if gui_open or Launchpad.active then reaper.defer(loop) end
 end
 reaper.defer(loop)
