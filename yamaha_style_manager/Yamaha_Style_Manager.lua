@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.2.2
+-- @version 1.2.3
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -423,9 +423,7 @@ local function draw_chord_window()
       local label = voice.solo and "Soloist (Ch 1)" or ("Ch " .. (voice.chan + 1))
       reaper.ImGui_Text(chord_ctx, string.format("%s: %d/%d, prg %d", label, voice.msb or 0, voice.lsb or 0, (voice.prg or 0) + 1))
     end
-      reaper.ImGui_End(chord_ctx)
-    end
-    if not open then chord_ctx = nil end
+    reaper.ImGui_End(chord_ctx)
   end
   if not open then chord_ctx = nil end
 end
