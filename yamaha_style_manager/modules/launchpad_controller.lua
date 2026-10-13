@@ -186,7 +186,7 @@ function Launchpad.setup(folder, region_count, devices, rig, mapper)
   Launchpad.mapper = mapper
   Launchpad.lit, Launchpad.cur, Launchpad.pending, Launchpad.after = nil, nil, nil, nil
   Launchpad.last_main = nil
-  set_programmer_mode(true)
+  Launchpad.last_event = reaper.MIDI_GetRecentInputEvent(0) or 0  set_programmer_mode(true)
   for pad = 1, MAX_PADS do set_pad(pad, nil) end
   for i, region in ipairs(Launchpad.regions) do
     if i <= MAX_PADS then set_pad(i, region.name) end
@@ -461,11 +461,17 @@ end
 
 function Launchpad.poll()
   if not Launchpad.active then return end
+  -- Collect only events newer than the last one handled (ids increase), then handle them oldest first.
+  local fresh, newest = {}, Launchpad.last_event
   for event_index = 0, 127 do
     local event_id, message, _, flags = reaper.MIDI_GetRecentInputEvent(event_index)
-    if not event_id or event_id == 0 then break end
-    if event_id == Launchpad.last_event then break end
-    if event_index == 0 then Launchpad.last_event = event_id end
+    if not event_id or event_id == 0 or event_id <= Launchpad.last_event then break end
+    if event_id > newest then newest = event_id end
+    table.insert(fresh, 1, { message = message, flags = flags })
+  end
+  Launchpad.last_event = newest
+  for _, event in ipairs(fresh) do
+    local message, flags = event.message, event.flags
     local input_id = flags and (flags & 0xFFFF)
     if input_id and Launchpad.input_set and Launchpad.input_set[input_id] and message and #message >= 3 then
       Launchpad.last_seen = string.format('port %d: %02X %02X %02X', input_id, message:byte(1), message:byte(2), message:byte(3))
