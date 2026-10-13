@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Yamaha MX Styles" commit="0a03984336d9286db052a01aef93ec9c5f49011b">
+<index version="1" name="Yamaha MX Styles" commit="b95ca348ce2f0150bfa349f40f7547055dc4ed81">
   <category name="Scripts/Yamaha_Style_Manager">
     <reapack name="Yamaha_Style_Manager.lua" type="script" desc="Yamaha STY Style Manager &amp; Live Rig Builder">
       <metadata>
@@ -128,6 +128,16 @@
         <source file="modules/region_builder.lua">https://github.com/cotrino/yamaha-mx-styles/raw/0a03984336d9286db052a01aef93ec9c5f49011b/yamaha_style_manager/modules/region_builder.lua</source>
         <source file="modules/sty_parser.lua">https://github.com/cotrino/yamaha-mx-styles/raw/0a03984336d9286db052a01aef93ec9c5f49011b/yamaha_style_manager/modules/sty_parser.lua</source>
         <source file="modules/voice_map.lua">https://github.com/cotrino/yamaha-mx-styles/raw/0a03984336d9286db052a01aef93ec9c5f49011b/yamaha_style_manager/modules/voice_map.lua</source>
+      </version>
+      <version name="1.2.4" author="Jose M. Cotrino" time="2026-10-13T21:10:26Z">
+        <source main="main">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/Yamaha_Style_Manager.lua</source>
+        <source file="jsfx/sty_chord_transposer.jsfx">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/jsfx/sty_chord_transposer.jsfx</source>
+        <source file="modules/chord_detect.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/chord_detect.lua</source>
+        <source file="modules/launchpad_controller.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/launchpad_controller.lua</source>
+        <source file="modules/mx88_mapper.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/mx88_mapper.lua</source>
+        <source file="modules/region_builder.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/region_builder.lua</source>
+        <source file="modules/sty_parser.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/sty_parser.lua</source>
+        <source file="modules/voice_map.lua">https://github.com/cotrino/yamaha-mx-styles/raw/b95ca348ce2f0150bfa349f40f7547055dc4ed81/yamaha_style_manager/modules/voice_map.lua</source>
       </version>
     </reapack>
   </category>
