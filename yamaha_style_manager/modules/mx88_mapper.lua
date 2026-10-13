@@ -114,7 +114,19 @@ function Mapper.send_voices(output, voices)
     reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 0, v.msb)
     reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 32, v.lsb)
     reaper.StuffMIDIMessage(16 + output, 0xC0 | v.chan, v.prg, 0)
+    if v.solo then
+      -- A live voice change must not leave hanging notes or a muted channel behind.
+      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 123, 0)
+      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 7, 100)
+    end
   end
+end
+
+-- Local Control off stops the keyboard from sounding by itself, so only the rig's MIDI reaches the voices.
+function Mapper.set_local_control(output, on)
+  if not output then return end
+  reaper.SendMIDIMessageToHardware(output, string.char(0xF0, 0x43, 0x10, 0x7F, 0x1C, 0x00, 0x00, 0x0A, on and 1 or 0, 0xF7))
+  reaper.StuffMIDIMessage(16 + output, 0xB0, 122, on and 127 or 0)
 end
 
 -- A previous import keeps playing to the same MX88 channels, which sounds like looping background notes

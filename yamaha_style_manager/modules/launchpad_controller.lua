@@ -1,16 +1,28 @@
 -- @noindex
 -- Launchpad Mini MK3 control. The script switches the pad to PROGRAMMER mode by SysEx (no need to press USER), so
 -- the 8x8 grid reports notes 11-88 (bottom-left = 11, top-right = 88) and accepts RGB colours by SysEx.
--- Rows 2-8 from the bottom hold the style sections (top row first); the bottom row holds the arranger controls.
+-- The bottom row holds arranger controls, a middle row selects the soloist voice, and the remaining 6 rows hold sections.
 -- LEDs are sent to every Launchpad output port and pad presses are read from every Launchpad input port.
 local reaper = reaper
 local Launchpad = { last_event = 0, regions = {}, output = nil, input = nil, active = false,
   lit = nil, parts = {}, nano_input = nil, voices = nil, yamaha_output = nil, mapper = nil }
 
 local Regions = require("region_builder")
-local MAX_PADS = 56
+local SECTION_ROWS = { 8, 7, 6, 4, 3, 2 }
+local SOLO_ROW = 5
+local MAX_PADS = #SECTION_ROWS * 8
 local LOOKAHEAD = 0.03 -- seconds before a section end at which the arranger jumps (defer jitter margin)
 local HEADER = string.char(0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D)
+local SOLO_PRESETS = {
+  { note = 51, prg = 0, label = "Grand Piano", rgb = { 127, 127, 127 } },
+  { note = 52, prg = 4, label = "Electric Piano", rgb = { 0, 100, 127 } },
+  { note = 53, prg = 19, label = "Organ", rgb = { 0, 127, 60 } },
+  { note = 54, prg = 24, label = "Guitar", rgb = { 127, 80, 0 } },
+  { note = 55, prg = 40, label = "Violin", rgb = { 127, 0, 127 } },
+  { note = 56, prg = 56, label = "Trumpet", rgb = { 127, 30, 30 } },
+  { note = 57, prg = 65, label = "Alto Sax", rgb = { 127, 127, 0 } },
+  { note = 58, prg = 73, label = "Flute", rgb = { 0, 127, 127 } },
+}
 
 local function rgb_for(name)
   local section = Regions.section_for(name)
@@ -25,13 +37,27 @@ end
 
 local function pad_note(index) -- region index (1 = top-left pad) -> programmer-mode note
   local row, col = (index - 1) // 8, (index - 1) % 8
-  return (8 - row) * 10 + col + 1
+  return SECTION_ROWS[row + 1] * 10 + col + 1
 end
 
 local function note_to_index(note)
   local row, col = note // 10, note % 10
-  if row < 2 or row > 8 or col < 1 or col > 8 then return nil end
-  return (8 - row) * 8 + col
+  if col < 1 or col > 8 then return nil end
+  for i, section_row in ipairs(SECTION_ROWS) do
+    if row == section_row then return (i - 1) * 8 + col end
+  end
+end
+
+local function solo_preset_for_note(note)
+  for _, preset in ipairs(SOLO_PRESETS) do
+    if preset.note == note then return preset end
+  end
+end
+
+local function current_solo_voice()
+  for _, v in ipairs(Launchpad.voices or {}) do
+    if v.solo then return v end
+  end
 end
 local function output_named(name)
   for index = 0, 63 do
@@ -90,6 +116,30 @@ local function set_pad(index, name)
   if name then led_rgb(note, rgb_for(name)) else led_off(note) end
 end
 
+local function draw_solo_row()
+  local current = current_solo_voice()
+  local active_prg = current and current.prg
+  for _, preset in ipairs(SOLO_PRESETS) do
+    local color = preset.rgb
+    if active_prg == preset.prg then
+      led_rgb(preset.note, 127, 127, 127)
+    else
+      led_rgb(preset.note, color[1], color[2], color[3])
+    end
+  end
+end
+
+local function set_solo_voice(program)
+  local solo = current_solo_voice()
+  if not solo then return end
+  solo.prg = program
+  reaper.SetExtState("YamahaStyleManager", "SoloVoice", tostring(program), true)
+  if Launchpad.mapper and Launchpad.yamaha_output then
+    Launchpad.mapper.send_voices(Launchpad.yamaha_output, { solo })
+  end
+  draw_solo_row()
+end
+
 local function set_programmer_mode(enabled)
   for _, id in ipairs(Launchpad.outputs or {}) do
     hardware(id, HEADER .. string.char(0x0E, enabled and 1 or 0, 0xF7))
@@ -142,12 +192,16 @@ function Launchpad.setup(folder, region_count, devices, rig, mapper)
     if i <= MAX_PADS then set_pad(i, region.name) end
   end
   Launchpad.draw_controls()
+  draw_solo_row()
   flush_leds()
   Launchpad.active = (#Launchpad.inputs > 0 or Launchpad.nano_input ~= nil) and #Launchpad.regions > 0
-  if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
+  if Launchpad.mapper then
+    Launchpad.mapper.set_local_control(Launchpad.yamaha_output, false)
+    Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices)
+  end
   return {
     message = (#Launchpad.inputs > 0 and #Launchpad.outputs > 0) and
-      "Launchpad ready (Programmer mode): pads = sections, bottom row = controls." or
+      "Launchpad ready (Programmer mode): pads = sections, bottom row = controls, middle row = solo voices." or
       "Launchpad input/output not detected; MIDI region controls remain inactive.",
   }
 end
@@ -161,12 +215,15 @@ function Launchpad.reinit()
   end
   Launchpad.lit = nil
   Launchpad.draw_controls()
+  draw_solo_row()
   flush_leds()
 end
 
 function Launchpad.shutdown()
+  if Launchpad.mapper and Launchpad.yamaha_output then Launchpad.mapper.set_local_control(Launchpad.yamaha_output, true) end
   for pad = 1, MAX_PADS do set_pad(pad, nil) end
   for note = 11, 18 do led_off(note) end
+  for _, preset in ipairs(SOLO_PRESETS) do led_off(preset.note) end
   flush_leds()
   set_programmer_mode(false)
   Launchpad.active = false
@@ -218,7 +275,7 @@ local function go(index, from_pending)
   set_loop(index)
   reaper.SetEditCurPos2(0, region.start, false, true)
   Launchpad.holdoff = reaper.time_precise() + 0.2
-  if not from_pending then Launchpad.pending = nil end
+  Launchpad.last_pos = nil  if not from_pending then Launchpad.pending = nil end
 end
 
 local function next_bar(position)
@@ -264,7 +321,10 @@ function Launchpad.trigger(index)
     local fill = fill_before(Launchpad.cur, index)
     if fill then target, after = fill, index end
   end
-  Launchpad.pending = { target = target, after = after, final = index, at = next_bar(reaper.GetPlayPosition()) }
+  local at = next_bar(reaper.GetPlayPosition())
+  local playing = Launchpad.cur and Launchpad.regions[Launchpad.cur]
+  if playing then at = playing.finish end -- sections change only when the current one ends
+  Launchpad.pending = { target = target, after = after, final = index, at = at, armed = reaper.GetPlayPosition() }
   if index <= MAX_PADS then led_pulse(pad_note(index), 3) end
 end
 
@@ -306,6 +366,7 @@ local function resend()
 end
 
 local function run_control(name)
+  Launchpad.last_action = name
   if name == "play" then Launchpad.play_stop()
   elseif name == "autofill" then Launchpad.toggle_auto_fill()
   elseif name == "ending" then Launchpad.trigger_ending()
@@ -327,7 +388,9 @@ local function update_arranger()
   local now = reaper.time_precise()
   if now >= Launchpad.holdoff then
     local pending = Launchpad.pending
-    if pending and position >= pending.at - LOOKAHEAD then
+    local wrapped = Launchpad.last_pos and position < Launchpad.last_pos - 0.01
+    Launchpad.last_pos = position
+    if pending and (position >= pending.at - LOOKAHEAD or wrapped) then
       Launchpad.after = pending.after
       Launchpad.pending = nil
       go(pending.target, true)
@@ -414,11 +477,18 @@ function Launchpad.poll()
       and (message:byte(1) & 0xF0) == 0x90 and message:byte(3) > 0 then
       local note = message:byte(2)
       local index = note_to_index(note)
-      if index then Launchpad.trigger(index) elseif CONTROL[note] then run_control(CONTROL[note]) end
+      local preset = solo_preset_for_note(note)
+      if index then Launchpad.trigger(index)
+      elseif CONTROL[note] then run_control(CONTROL[note])
+      elseif preset then set_solo_voice(preset.prg) end
     end
   end
   update_arranger()
   flush_leds()
 end
+
+Launchpad.SOLO_PRESETS = SOLO_PRESETS
+Launchpad.set_solo_voice = set_solo_voice
+Launchpad.current_solo_voice = current_solo_voice
 
 return Launchpad

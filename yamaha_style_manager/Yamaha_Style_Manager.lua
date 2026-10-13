@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.2.0
+-- @version 1.2.2
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -283,13 +283,14 @@ local function draw_window()
       state.open_hw = false
     end
     if reaper.ImGui_CollapsingHeader(ctx, "Launchpad Mini MK3 / nanoKONTROL2 - how to use") then
-      reaper.ImGui_TextWrapped(ctx, "SETUP: connect the Launchpad (use its 'LPMiniMK3 MIDI' port, not the DAW port) and the nanoKONTROL2 in CC mode, select them below, and double-click a style. The window closes and the script keeps running in the background (run it again to open the window).")
+      reaper.ImGui_TextWrapped(ctx, "SETUP: connect the Launchpad and the nanoKONTROL2 in CC mode, select them below, and double-click a style. IMPORTANT: in REAPER > Preferences > Audio > MIDI Devices, both Launchpad input ports ('LPMiniMK3 MIDI' and 'MIDIIN2 (LPMiniMK3 MIDI)') must be set to Enabled, not Enabled+Control, otherwise pad presses do not reach this script. The window closes and the script keeps running in the background (run it again to open the window).")
       reaper.ImGui_Separator(ctx)
-      reaper.ImGui_TextWrapped(ctx, "LAUNCHPAD: no mode button needed - the script switches the Launchpad to Programmer mode by itself (and back to Live mode when it stops). The 8x8 grid is used: the top 7 rows = one pad per style section (section 1 = top-left, left to right then downward), bottom row = controls. Pad colours match the REAPER region colours: blue = Intro, green = Main, orange = Fill In, pink = Break, red = Ending. The playing section turns white; a pad you pressed pulses until the section changes at the next bar line. Main sections loop until you press another pad. Fill In and Break play once and return to the last Main (with Auto-fill on, changing Main A to Main B first plays Fill In AA). Intro plays once, then loops the matching Main. Ending plays once and stops.")
+      reaper.ImGui_TextWrapped(ctx, "LAUNCHPAD: no mode button needed - the script switches the Launchpad to Programmer mode by itself (and back to Live mode when it stops). The top 3 rows and the bottom 3 rows above the control row are style sections (section 1 = top-left, left to right then downward, skipping the middle solo row). Pad colours match the REAPER region colours: blue = Intro, green = Main, orange = Fill In, pink = Break, red = Ending. The playing section turns white; a pad you pressed pulses until the section changes at the next bar line. Main sections loop until you press another pad. Fill In and Break play once and return to the last Main (with Auto-fill on, changing Main A to Main B first plays Fill In AA). Intro plays once, then loops the matching Main. Ending plays once and stops.")
+      reaper.ImGui_TextWrapped(ctx, "MIDDLE ROW, left to right: Grand Piano, Electric Piano, Organ, Guitar, Violin, Trumpet, Alto Sax, Flute. Press one to change the MX88 soloist voice immediately.")
       reaper.ImGui_TextWrapped(ctx, "BOTTOM ROW, left to right: PLAY/STOP (green), AUTO-FILL on/off (yellow = on), ENDING (red), RESEND MX88 voices (blue), TEMPO - and TEMPO + (cyan, 2 BPM), PREVIOUS and NEXT section (pink).")
       reaper.ImGui_TextWrapped(ctx, "KEYBOARD: the MX88 is split. LEFT hand (below the split point) chooses the chord: the style parts follow it and it is held until you play a new chord. RIGHT hand (from the split point up) plays the soloist voice on MX88 channel 1. Split point and solo voice are set in 'Keyboard split' below and apply to the next import.")
       local regions = Launchpad.regions or {}
-      for row = 1, 7 do
+      for row = 1, 6 do
         local names = {}
         for col = 1, 8 do
           local region = regions[(row - 1) * 8 + col]
@@ -322,7 +323,7 @@ local function draw_window()
       if c2 then reaper.SetExtState(EXT_SECTION, "SoloVoice", tostring(new_solo), true) end
     end
     if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
-      reaper.ImGui_TextWrapped(ctx, "The Launchpad has two ports (MIDI and MIDIIN2/MIDIOUT2): both are enabled in REAPER and both are used automatically for pad presses and LEDs. Last Launchpad message seen: " .. (Launchpad.last_seen or "none yet (press a pad)"))
+      reaper.ImGui_TextWrapped(ctx, "The Launchpad has two ports (MIDI and MIDIIN2/MIDIOUT2): both are used automatically for pad presses and LEDs. For input, both Launchpad ports in REAPER must be Enabled (not Enabled+Control). Last Launchpad message seen: " .. (Launchpad.last_seen or "none yet (press a pad)"))
       local resolved, _, lists = current_devices()
       for _, slot in ipairs(DEVICE_SLOTS) do
         device_selector(slot, lists[slot.outputs == true], resolved[slot.key])
@@ -388,7 +389,7 @@ local function draw_chord_window()
   if not chord_ctx then
     chord_ctx = reaper.ImGui_CreateContext("Active Chord")
   end
-  reaper.ImGui_SetNextWindowSize(chord_ctx, 360, 190, reaper.ImGui_Cond_FirstUseEver())
+  reaper.ImGui_SetNextWindowSize(chord_ctx, 380, 520, reaper.ImGui_Cond_FirstUseEver())
   local visible, open = reaper.ImGui_Begin(chord_ctx, "Active Chord", true)
   if visible then
     local root, mask, bass = chord_state()
@@ -404,7 +405,27 @@ local function draw_chord_window()
       local _, _, _, _, name = reaper.EnumProjectMarkers(region_index)
       reaper.ImGui_Text(chord_ctx, "Section: " .. tostring(name))
     end
-    reaper.ImGui_End(chord_ctx)
+    reaper.ImGui_Separator(chord_ctx)
+    reaper.ImGui_Text(chord_ctx, "Soloist voice (click to change):")
+    local solo = Launchpad.current_solo_voice and Launchpad.current_solo_voice()
+    for _, preset in ipairs(Launchpad.SOLO_PRESETS or {}) do
+      local active = solo and solo.prg == preset.prg
+      if reaper.ImGui_RadioButton(chord_ctx, preset.label, active and true or false) then
+        Launchpad.set_solo_voice(preset.prg)
+      end
+    end
+    if Launchpad.last_action or Launchpad.last_seen then
+      reaper.ImGui_Text(chord_ctx, "Last pad: " .. tostring(Launchpad.last_action or "-") .. "  " .. tostring(Launchpad.last_seen or ""))
+    end
+    reaper.ImGui_Separator(chord_ctx)
+    reaper.ImGui_Text(chord_ctx, "Selected voices on the MX88 (bank MSB/LSB, program):")
+    for index, voice in ipairs(Launchpad.voices or {}) do
+      local label = voice.solo and "Soloist (Ch 1)" or ("Ch " .. (voice.chan + 1))
+      reaper.ImGui_Text(chord_ctx, string.format("%s: %d/%d, prg %d", label, voice.msb or 0, voice.lsb or 0, (voice.prg or 0) + 1))
+    end
+      reaper.ImGui_End(chord_ctx)
+    end
+    if not open then chord_ctx = nil end
   end
   if not open then chord_ctx = nil end
 end
