@@ -7,7 +7,7 @@ slider1:0<-24,24,1>Additional transpose semitones
 slider2:60<0,127,1>Split point (keys below = chord, keys from here up = soloist)
 slider3:0<0,1,1{Style part,Chord keyboard track}>Mode
 slider4:0<0,11,1>Chord root (pitch class, read only)
-slider5:1<0,4095,1>Chord notes relative to root (bit mask, read only)
+slider5:0<0,4095,1>Chord notes relative to root (bit mask, read only; 0 = no chord played yet)
 slider6:48<0,127,1>Chord bass note (read only)
 
 @init
