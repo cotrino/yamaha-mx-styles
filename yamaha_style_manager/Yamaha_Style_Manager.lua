@@ -1,6 +1,6 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.2.4
+-- @version 1.3.0
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
 -- @provides
 --   [main] .
@@ -20,7 +20,7 @@ local script_path = debug.getinfo(1, "S").source:match("^@?(.*[\\/])")
 package.path = script_path .. "modules/?.lua;" .. package.path
 
 -- REAPER keeps required modules between runs, so drop them to always load the installed version.
-for _, name in ipairs({ "sty_parser", "mx88_mapper", "voice_map", "region_builder", "launchpad_controller", "chord_detect" }) do package.loaded[name] = nil end
+for _, name in ipairs({ "sty_parser", "mx88_mapper", "voice_map", "region_builder", "launchpad_controller", "chord_detect", "chord_theory" }) do package.loaded[name] = nil end
 
 local Parser = require("sty_parser")
 local Mapper = require("mx88_mapper")
@@ -374,6 +374,7 @@ refresh_library()
 reaper.atexit(function() Launchpad.shutdown() end)
 
 local Chord = require("chord_detect")
+local Theory = require("chord_theory")
 local chord_ctx
 local function chord_state()
   local rig = Launchpad.rig
@@ -389,11 +390,12 @@ local function draw_chord_window()
   if not chord_ctx then
     chord_ctx = reaper.ImGui_CreateContext("Active Chord")
   end
-  reaper.ImGui_SetNextWindowSize(chord_ctx, 380, 520, reaper.ImGui_Cond_FirstUseEver())
+  reaper.ImGui_SetNextWindowSize(chord_ctx, 680, 900, reaper.ImGui_Cond_FirstUseEver())
   local visible, open = reaper.ImGui_Begin(chord_ctx, "Active Chord", true)
   if visible then
     local root, mask, bass = chord_state()
     if root and mask and mask > 0 then
+      Theory.push(root, mask)
       reaper.ImGui_TextColored(chord_ctx, 0x55FF88FF, "CHORD:  " .. Chord.name(root, mask))
       reaper.ImGui_Text(chord_ctx, "Notes: " .. Chord.notes(root, mask))
     else
@@ -404,6 +406,24 @@ local function draw_chord_window()
     if region_index and region_index >= 0 then
       local _, _, _, _, name = reaper.EnumProjectMarkers(region_index)
       reaper.ImGui_Text(chord_ctx, "Section: " .. tostring(name))
+    end
+    reaper.ImGui_Separator(chord_ctx)
+    local suggestions, key = Theory.suggest(6)
+    if key then
+      reaper.ImGui_TextColored(chord_ctx, 0xFFD060FF, string.format("KEY / SCALE:  %s  (confidence %d%%)", key.name, math.floor(key.confidence * 100)))
+      reaper.ImGui_Text(chord_ctx, "Scale notes: " .. table.concat(key.notes, " "))
+      local parts = {}
+      for _, chord in ipairs(Theory.history) do parts[#parts + 1] = chord.name .. " (" .. Theory.roman(key, chord) .. ")" end
+      reaper.ImGui_TextWrapped(chord_ctx, "Sequence: " .. table.concat(parts, "  >  "))
+      reaper.ImGui_Text(chord_ctx, "Suggested next chords:")
+      for _, item in ipairs(suggestions) do
+        reaper.ImGui_TextColored(chord_ctx, 0x80D0FFFF, string.format("  %-7s %-6s %3d%%", item.name, item.roman, item.percent))
+        reaper.ImGui_SameLine(chord_ctx)
+        reaper.ImGui_Text(chord_ctx, "  " .. item.why)
+      end
+      if reaper.ImGui_Button(chord_ctx, "Clear chord history") then Theory.reset() end
+    else
+      reaper.ImGui_Text(chord_ctx, "Play a few chords to detect the key and get suggestions.")
     end
     reaper.ImGui_Separator(chord_ctx)
     reaper.ImGui_Text(chord_ctx, "Soloist voice (click to change):")
