@@ -20,6 +20,79 @@ class StyleModuleTests(unittest.TestCase):
     def module(self, path):
         return self.lua.execute("return dofile(...)", str(path))
 
+    def mapper(self):
+        self.lua.globals().module_dir = str(ROOT / "yamaha_style_manager" / "modules")
+        self.lua.execute("package.path = module_dir .. '\\\\?.lua;' .. package.path")
+        driver = self.module(SUITE / "lib" / "midi_yamaha_driver.lua")
+        driver.init(str(SUITE / "data" / "Yamaha_MX49.reabank"),
+                    str(SUITE / "data" / "Yamaha_MX88_Arpeggios.csv"))
+        mapper = self.lua.eval("require('mx88_mapper')")[0]
+        mapper.configure(driver)
+        return mapper, driver
+
+    def test_solo_shortcuts_use_named_native_presets(self):
+        self.mapper()
+        mapping = self.lua.eval("package.loaded.voice_map")
+        expected = {
+            0: (0, 0, "CncrtGrand"), 4: (0, 21, "Vintage'74"),
+            19: (0, 82, "Jz2Perc+C3"), 24: (1, 49, "Classical"),
+            40: (2, 126, "Vln Solo 1"), 56: (3, 68, "Trumpet 1"),
+            65: (4, 2, "AltoVibLeg"), 73: (4, 15, "Sweet Flt"),
+        }
+        for program, (lsb, prg, name) in expected.items():
+            voice = mapping.solo(program)
+            self.assertEqual((voice.msb, voice.lsb, voice.prg), (63, lsb, prg))
+            self.assertTrue(voice.name.endswith(name), voice.name)
+
+    def test_solo_resend_restores_level_expression_and_native_voice(self):
+        self.lua.execute("""
+          messages, settings = {}, {}
+          reaper.GetExtState = function(_, key) return settings[key] or "" end
+          reaper.GetPlayState = function() return 0 end
+          reaper.GetCursorPosition = function() return 0 end
+          reaper.StuffMIDIMessage = function(port, status, d1, d2)
+            messages[#messages + 1] = {port, status, d1, d2}
+          end
+          reaper.SendMIDIMessageToHardware = function() end
+        """)
+        mapper, _ = self.mapper()
+        mapping = self.lua.eval("package.loaded.voice_map")
+        voice = mapping.solo(65)
+        solo = self.lua.table_from({
+            "chan": 0, "msb": voice.msb, "lsb": voice.lsb,
+            "prg": voice.prg, "solo": True, "name": "stale",
+        })
+        mapper.send_voices(0, self.lua.table_from([solo]))
+        messages = [tuple(m.values()) for m in self.lua.globals().messages.values()]
+        for expected in ((16, 176, 0, 63), (16, 176, 32, 4),
+                         (16, 192, 2, 0), (16, 176, 7, 120),
+                         (16, 176, 11, 127), (16, 176, 74, 64)):
+            self.assertIn(expected, messages)
+        self.assertEqual(solo.name, voice.name)
+        self.lua.globals().settings.SoloVolume = "112"
+        self.assertEqual(mapper.solo_volume(), 112)
+        self.lua.globals().settings.SoloVolume = "999"
+        self.assertEqual(mapper.solo_volume(), 127)
+        self.lua.globals().settings.SoloVolume = "-1"
+        self.assertEqual(mapper.solo_volume(), 0)
+
+    def test_display_refresh_reads_section_without_sending_midi(self):
+        self.lua.execute("reaper.ValidatePtr = function() return true end")
+        mapper, driver = self.mapper()
+        driver.sections = self.lua.eval("""{
+          read = function(_, position)
+            return {msb = 63, lsb = 4, prg = position < 2 and 2 or 15}
+          end
+        }""")
+        voice = self.lua.table_from({"track": self.lua.table(), "name": "stale"})
+        mapper.refresh_voice(voice, 0)
+        self.assertTrue(voice.name.endswith("AltoVibLeg"))
+        mapper.refresh_voice(voice, 3)
+        self.assertTrue(voice.name.endswith("Sweet Flt"))
+        voice.track, voice.msb, voice.lsb, voice.prg = None, 63, 99, 0
+        mapper.refresh_voice(voice, 3)
+        self.assertIn("Unknown MX voice", voice.name)
+
     def parse(self, track, declared_length=None):
         data = (b"MThd" + struct.pack(">IHHH", 6, 0, 1, 96) +
                 b"MTrk" + struct.pack(">I", len(track) if declared_length is None else declared_length) + track + b"CASM")

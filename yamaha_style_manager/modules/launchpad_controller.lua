@@ -119,10 +119,9 @@ end
 
 local function draw_solo_row()
   local current = current_solo_voice()
-  local active_prg = current and current.gm_prg
   for _, preset in ipairs(SOLO_PRESETS) do
     local color = preset.rgb
-    if active_prg == preset.prg then
+    if current and VoiceMap.id(current) == VoiceMap.id(VoiceMap.solo(preset.prg)) then
       led_rgb(preset.note, 127, 127, 127)
     else
       led_rgb(preset.note, color[1], color[2], color[3])
@@ -130,14 +129,14 @@ local function draw_solo_row()
   end
 end
 
-local function set_solo_voice(program)
+local function set_solo_voice(program, preset)
+  local mapped = VoiceMap.solo(program, preset)
+  reaper.SetExtState("YamahaStyleManager", "SoloVoice", tostring(program), true)
+  reaper.SetExtState("YamahaStyleManager", "SoloPreset", VoiceMap.id(mapped), true)
   local solo = current_solo_voice()
   if not solo then return end
-  local mapped = VoiceMap.resolve({ prg = program }, "solo")
   solo.msb, solo.lsb, solo.prg, solo.name = mapped.msb, mapped.lsb, mapped.prg, mapped.name
   solo.gm_prg = program
-  reaper.SetExtState("YamahaStyleManager", "SoloVoice", tostring(program), true)
-  reaper.SetExtState("YamahaStyleManager", "SoloPreset", "", true)
   if Launchpad.mapper and Launchpad.yamaha_output then
     Launchpad.mapper.send_voices(Launchpad.yamaha_output, { solo })
   end

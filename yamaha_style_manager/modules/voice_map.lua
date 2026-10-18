@@ -12,6 +12,10 @@ local ROLES = {
   phrase2 = { allowed = { { 0, 31 }, { 40, 103 } }, default = 61 },
 }
 local KITS = { [8] = 5, [16] = 0, [24] = 35, [25] = 25, [32] = 22, [40] = 21, [48] = 42 }
+local SOLO = {
+  [0] = "63:0:0", [4] = "63:0:21", [19] = "63:0:82", [24] = "63:1:49",
+  [40] = "63:2:126", [56] = "63:3:68", [65] = "63:4:2", [73] = "63:4:15",
+}
 
 local function key(msb, lsb, prg) return string.format("%d:%d:%d", msb, lsb, prg) end
 local function sound_name(name) return name:match(":%s*(.+)$") or name end
@@ -40,9 +44,21 @@ end
 
 function VoiceMap.id(voice) return key(voice.msb, voice.lsb, voice.prg) end
 
+function VoiceMap.find(msb, lsb, prg) return exact[key(msb, lsb, prg)] end
+
+function VoiceMap.name(voice)
+  local preset = VoiceMap.find(voice.msb, voice.lsb, voice.prg)
+  return preset and preset.name or string.format("Unknown MX voice (%d/%d, prg %d)",
+    voice.msb, voice.lsb, voice.prg + 1)
+end
+
 function VoiceMap.solo(program, preset)
   local voice = preset and exact[preset]
   if voice and voice.msb == 63 and voice.lsb < 8 then return voice end
+  if SOLO[program] then
+    local selected = assert(exact[SOLO[program]], "Missing MX solo preset")
+    return selected
+  end
   return VoiceMap.resolve({ prg = program }, "solo")
 end
 

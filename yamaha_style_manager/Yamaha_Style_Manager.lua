@@ -1,8 +1,8 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.4.0
+-- @version 1.4.1
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
--- @changelog Native MX voices, per-section/channel Genos Inspector editing, safe region ownership, and catalog browsing.
+-- @changelog Named native solo shortcuts, live preset selection and section voice names, adjustable solo level with expression restoration.
 -- @provides
 --   [main] .
 --   modules/*.lua
@@ -378,7 +378,7 @@ local function draw_window()
           for _, voice in ipairs(VoiceMap.presets) do
             local id = VoiceMap.id(voice)
             if reaper.ImGui_Selectable(ctx, voice.name .. "##solo" .. id, current == voice) then
-              reaper.SetExtState(EXT_SECTION, "SoloPreset", id, true)
+              Launchpad.set_solo_voice(solo, id)
             end
           end
           reaper.ImGui_EndCombo(ctx)
@@ -492,17 +492,33 @@ local function draw_chord_window()
     reaper.ImGui_Text(chord_ctx, "Soloist voice (click to change):")
     local solo = Launchpad.current_solo_voice and Launchpad.current_solo_voice()
     for _, preset in ipairs(Launchpad.SOLO_PRESETS or {}) do
-      local active = solo and solo.gm_prg == preset.prg
-      if reaper.ImGui_RadioButton(chord_ctx, preset.label, active and true or false) then
+      local voice = VoiceMap.solo(preset.prg)
+      local active = solo and VoiceMap.id(solo) == VoiceMap.id(voice)
+      if reaper.ImGui_RadioButton(chord_ctx, preset.label .. " - " .. voice.name, active and true or false) then
         Launchpad.set_solo_voice(preset.prg)
       end
+    end
+    if solo and reaper.ImGui_BeginCombo(chord_ctx, "All MX solo presets", solo.name) then
+      for _, voice in ipairs(VoiceMap.presets) do
+        local id = VoiceMap.id(voice)
+        if reaper.ImGui_Selectable(chord_ctx, voice.name .. "##live" .. id, VoiceMap.id(solo) == id) then
+          Launchpad.set_solo_voice(solo.gm_prg or 65, id)
+        end
+      end
+      reaper.ImGui_EndCombo(chord_ctx)
+    end
+    local level_changed, level = reaper.ImGui_SliderInt(chord_ctx, "Solo volume (CC7)", Mapper.solo_volume(), 0, 127)
+    if level_changed then
+      reaper.SetExtState(EXT_SECTION, "SoloVolume", tostring(level), true)
+      Mapper.send_solo_level(Launchpad.yamaha_output)
     end
     if Launchpad.last_action or Launchpad.last_seen then
       reaper.ImGui_Text(chord_ctx, "Last pad: " .. tostring(Launchpad.last_action or "-") .. "  " .. tostring(Launchpad.last_seen or ""))
     end
     reaper.ImGui_Separator(chord_ctx)
     reaper.ImGui_Text(chord_ctx, "Selected voices on the MX88 (bank MSB/LSB, program):")
-    for index, voice in ipairs(Launchpad.voices or {}) do
+    for _, voice in ipairs(Launchpad.voices or {}) do
+      Mapper.refresh_voice(voice, pos)
       local label = voice.solo and "Soloist (Ch 1)" or ("Ch " .. (voice.chan + 1))
       reaper.ImGui_Text(chord_ctx, string.format("%s: %s (%d/%d, prg %d)", label, voice.name or "Unknown",
         voice.msb or 0, voice.lsb or 0, (voice.prg or 0) + 1))

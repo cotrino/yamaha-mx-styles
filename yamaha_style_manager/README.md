@@ -26,6 +26,26 @@ The default library location is `C:\Users\josem\workarea\yamaha-mx-styles\styles
 
 Style files are deliberately not packaged: configure their local folder in the UI.
 
+## Soloist voices and level
+
+The Active Chord window and Launchpad middle row select native MX presets:
+CncrtGrand, Vintage'74, Jz2Perc+C3, Classical, Vln Solo 1, Trumpet 1,
+AltoVibLeg and Sweet Flt. The window shows the actual preset names and also
+offers all native normal-voice presets for immediate selection.
+The selected-voices list reads each part's bank/program at the current
+play/cursor position, including edits made in the Genos Inspector.
+
+**Solo volume (CC7)** defaults to 120/127 and is saved across runs. Selecting
+or resending a solo voice restores this level and full expression (CC11=127),
+neutral cutoff/resonance and arpeggiator-off, so a previously attenuated part
+does not stay quiet. Subsequent expression-pedal input still works normally.
+This controls MIDI part level, not the keyboard's master/audio-output level.
+
+Run the ReaPack action installed under `Yamaha MX Styles/Scripts/Yamaha_Style_Manager`.
+An older manual installation under `Yamaha STY Style Manager` is a different
+action and does not receive ReaPack updates. Close any running old manager
+before launching the updated action.
+
 ## Editing a section
 
 1. Import a style, expand **MX88 voices / Genos Inspector**, and click **Open Genos Inspector**.

@@ -130,17 +130,34 @@ local function ensure_jsfx(source_path)
   if not ok then error("Cannot write chord transposer: " .. tostring(write_error)) end
 end
 
+function Mapper.refresh_voice(voice, position)
+  local state
+  if voice.track and reaper.ValidatePtr(voice.track, "MediaTrack*") then
+    state = Mapper.driver.sections.read(voice.track, position)
+    if state then voice.msb, voice.lsb, voice.prg = state.msb, state.lsb, state.prg end
+  end
+  voice.name = VoiceMap.name(voice)
+  return state
+end
+
+function Mapper.solo_volume()
+  return math.max(0, math.min(127,
+    math.floor(tonumber(reaper.GetExtState("YamahaStyleManager", "SoloVolume")) or 120)))
+end
+
+function Mapper.send_solo_level(output)
+  if output == nil then return end
+  reaper.StuffMIDIMessage(16 + output, 0xB0, 7, Mapper.solo_volume())
+  reaper.StuffMIDIMessage(16 + output, 0xB0, 11, 127)
+end
+
 -- Immediately selects the mapped voices on the keyboard (bank MSB/LSB then program change).
 function Mapper.send_voices(output, voices, position)
   if not output then return end
   position = position or ((reaper.GetPlayState() & 1 ~= 0) and reaper.GetPlayPosition() or reaper.GetCursorPosition())
   for _, v in ipairs(voices or {}) do
+    local state = Mapper.refresh_voice(v, position)
     local msb, lsb, prg = v.msb, v.lsb, v.prg
-    local state
-    if v.track and reaper.ValidatePtr(v.track, "MediaTrack*") then
-      state = Mapper.driver.sections.read(v.track, position)
-      if state then msb, lsb, prg = state.msb, state.lsb, state.prg end
-    end
     if state then
       local arp
       for _, candidate in ipairs(Mapper.driver.arpeggios) do
@@ -149,19 +166,14 @@ function Mapper.send_voices(output, voices, position)
       local controllers = state.controllers
       Mapper.driver.send_full_state(output, v.chan + 1, {msb = msb, lsb = lsb, prg = prg},
         arp, state.enabled, controllers[91], controllers[93], controllers[74], controllers[71])
+    elseif v.solo then
+      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 123, 0)
+      Mapper.driver.send_full_state(output, v.chan + 1, v, nil, false, 40, 0, 64, 64)
+      Mapper.send_solo_level(output)
     else
       reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 0, msb)
       reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 32, lsb)
       reaper.StuffMIDIMessage(16 + output, 0xC0 | v.chan, prg, 0)
-    end
-    v.msb, v.lsb, v.prg = msb, lsb, prg
-    for _, preset in ipairs(Mapper.driver.programs) do
-      if preset.msb == msb and preset.lsb == lsb and preset.prg == prg then v.name = preset.name break end
-    end
-    if v.solo then
-      -- A live voice change must not leave hanging notes or a muted channel behind.
-      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 123, 0)
-      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 7, 100)
     end
   end
 end
