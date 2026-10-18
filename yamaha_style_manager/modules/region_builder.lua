@@ -22,23 +22,30 @@ local function color_for(name)
   if not section then return 0 end
   return reaper.ColorToNative(section.rgb[1], section.rgb[2], section.rgb[3]) | 0x1000000
 end
-function Regions.create(markers, end_tick, ppq)
+function Regions.create(markers, end_tick, ppq, folder)
   if reaper.SNM_SetIntConfigVar then
     reaper.SNM_SetIntConfigVar("seekplay", 1)
     reaper.SNM_SetIntConfigVar("smoothseek", 0)
   end
-  local count = 0
+  local count, created = 0, {}
   for index, marker in ipairs(markers) do
     local next_marker = markers[index + 1]
     local finish_tick = next_marker and next_marker.tick or end_tick
     if finish_tick > marker.tick then
       local start_time = reaper.TimeMap2_QNToTime(0, marker.tick / ppq)
       local end_time = reaper.TimeMap2_QNToTime(0, finish_tick / ppq)
-      reaper.AddProjectMarker2(0, true, start_time, end_time, marker.name, -1, color_for(marker.name))
+      local marker_id = reaper.AddProjectMarker2(0, true, start_time, end_time, marker.name, -1, color_for(marker.name))
+      assert(marker_id >= 0, "Cannot create style region: " .. marker.name)
       count = count + 1
+      created[#created + 1] = { id = marker_id, start = start_time, finish = end_time, name = marker.name }
     end
   end
-  return count
+  if folder then
+    local ids = {}
+    for _, region in ipairs(created) do ids[#ids + 1] = tostring(region.id) end
+    reaper.GetSetMediaTrackInfo_String(folder, "P_EXT:MXStyleRegions", table.concat(ids, ","), true)
+  end
+  return count, created
 end
 
 return Regions

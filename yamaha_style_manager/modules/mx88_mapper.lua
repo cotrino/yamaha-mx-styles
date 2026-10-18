@@ -3,6 +3,11 @@ local reaper = reaper
 local Mapper = {}
 local VoiceMap = require("voice_map")
 
+function Mapper.configure(driver)
+  VoiceMap.configure(driver.programs)
+  Mapper.driver = driver
+end
+
 local PARTS = {
   { channel = 9, name = "Ch 9: Rhythm 2 (Percussion)", role = "drums" },
   { channel = 10, name = "Ch 10: Rhythm 1 (Drums)", role = "drums" },
@@ -29,7 +34,7 @@ local REAPER_PPQ = 960
 
 local function insert_events(take, events, channel, ppq, role, markers)
   local chan = channel - 1
-  local function scale(tick) return math.floor(tick * REAPER_PPQ / ppq + 0.5) end
+  local function scale(tick) return reaper.MIDI_GetPPQPosFromProjQN(take, tick / ppq) end
   -- Read the voice the style selects on this channel, then translate it to an MX88 voice for the part's role.
   local voice = {}
   for _, event in ipairs(events) do
@@ -41,20 +46,35 @@ local function insert_events(take, events, channel, ppq, role, markers)
     end
   end
   local mx = VoiceMap.resolve(voice, role)
-  reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, chan, 0, mx.msb)
-  reaper.MIDI_InsertCC(take, false, false, 1, 0xB0, chan, 32, mx.lsb)
-  reaper.MIDI_InsertCC(take, false, false, 2, 0xC0, chan, mx.prg, 0)
-  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 91, 40)
-  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 93, 0)
-  reaper.MIDI_InsertCC(take, false, false, 3, 0xB0, chan, 94, 0)
-  -- Repeat the voice at every section start so jumping to a region still selects the right sound.
+  local points, seen = { 0 }, { [0] = true }
   for _, marker in ipairs(markers or {}) do
-    local tick = scale(marker.tick)
-    if tick > 2 then
-      reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 0, mx.msb)
-      reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 32, mx.lsb)
-      reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, mx.prg, 0)
+    if not seen[marker.tick] then
+      points[#points + 1], seen[marker.tick] = marker.tick, true
     end
+  end
+  table.sort(points)
+  for _, point in ipairs(points) do
+    local selected = { msb = voice.msb, lsb = voice.lsb, prg = voice.prg }
+    for _, event in ipairs(events) do
+      if event.tick <= point and (event.status & 0x0F) == chan then
+        local kind = event.status & 0xF0
+        if kind == 0xB0 and event.data1 == 0 then selected.msb = event.data2
+        elseif kind == 0xB0 and event.data1 == 32 then selected.lsb = event.data2
+        elseif kind == 0xC0 then selected.prg = event.data1 end
+      end
+    end
+    local mapped, tick = VoiceMap.resolve(selected, role), scale(point)
+    reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 0, mapped.msb)
+    reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 32, mapped.lsb)
+    reaper.MIDI_InsertCC(take, false, false, tick, 0xC0, chan, mapped.prg, 0)
+    reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, 89, 0)
+    for _, controller in ipairs({ {91, 40}, {93, 0}, {94, 0}, {74, 64}, {71, 64} }) do
+      reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, controller[1], controller[2])
+    end
+    for _, body in ipairs(Mapper.driver.arp_messages(channel, nil, false)) do
+      reaper.MIDI_InsertTextSysexEvt(take, false, false, tick, -1, body)
+    end
+    if point == 0 then mx = mapped end
   end
   local open_notes = {}
   for _, event in ipairs(events) do
@@ -74,7 +94,7 @@ local function insert_events(take, events, channel, ppq, role, markers)
       elseif event_type == 0xB0 then
         -- Bank/program were sent at the start of the item; effect sends (91/93/94) are replaced by fixed levels
         -- because the style's values drive the MX88 variation effect (delay) and make parts echo.
-        if event.data1 ~= 0 and event.data1 ~= 32 and event.data1 ~= 91 and event.data1 ~= 93 and event.data1 ~= 94 then
+        if event.data1 ~= 0 and event.data1 ~= 32 and event.data1 ~= 89 and event.data1 ~= 91 and event.data1 ~= 93 and event.data1 ~= 94 then
           reaper.MIDI_InsertCC(take, false, false, tick, 0xB0, chan, event.data1, event.data2)
         end
       elseif event_type == 0xC0 then
@@ -91,7 +111,7 @@ local function insert_events(take, events, channel, ppq, role, markers)
     end
   end
   reaper.MIDI_Sort(take)
-  return { chan = chan, msb = mx.msb, lsb = mx.lsb, prg = mx.prg }
+  return { chan = chan, msb = mx.msb, lsb = mx.lsb, prg = mx.prg, name = mx.name }
 end
 local FX_NAME = "Yamaha/sty_chord_transposer.jsfx"
 
@@ -99,21 +119,45 @@ local FX_NAME = "Yamaha/sty_chord_transposer.jsfx"
 local function ensure_jsfx(source_path)
   local dir = reaper.GetResourcePath() .. "/Effects/Yamaha"
   reaper.RecursiveCreateDirectory(dir, 0)
-  local input = source_path and io.open(source_path, "rb")
-  if not input then return end
+  local input, input_error = io.open(source_path, "rb")
+  if not input then error("Cannot read chord transposer: " .. tostring(input_error)) end
   local data = input:read("*a")
   input:close()
-  local output = io.open(dir .. "/sty_chord_transposer.jsfx", "wb")
-  if output then output:write(data) output:close() end
+  local output, output_error = io.open(dir .. "/sty_chord_transposer.jsfx", "wb")
+  if not output then error("Cannot install chord transposer: " .. tostring(output_error)) end
+  local ok, write_error = output:write(data)
+  output:close()
+  if not ok then error("Cannot write chord transposer: " .. tostring(write_error)) end
 end
 
 -- Immediately selects the mapped voices on the keyboard (bank MSB/LSB then program change).
-function Mapper.send_voices(output, voices)
+function Mapper.send_voices(output, voices, position)
   if not output then return end
+  position = position or ((reaper.GetPlayState() & 1 ~= 0) and reaper.GetPlayPosition() or reaper.GetCursorPosition())
   for _, v in ipairs(voices or {}) do
-    reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 0, v.msb)
-    reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 32, v.lsb)
-    reaper.StuffMIDIMessage(16 + output, 0xC0 | v.chan, v.prg, 0)
+    local msb, lsb, prg = v.msb, v.lsb, v.prg
+    local state
+    if v.track and reaper.ValidatePtr(v.track, "MediaTrack*") then
+      state = Mapper.driver.sections.read(v.track, position)
+      if state then msb, lsb, prg = state.msb, state.lsb, state.prg end
+    end
+    if state then
+      local arp
+      for _, candidate in ipairs(Mapper.driver.arpeggios) do
+        if candidate.nr == state.arp_nr then arp = candidate break end
+      end
+      local controllers = state.controllers
+      Mapper.driver.send_full_state(output, v.chan + 1, {msb = msb, lsb = lsb, prg = prg},
+        arp, state.enabled, controllers[91], controllers[93], controllers[74], controllers[71])
+    else
+      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 0, msb)
+      reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 32, lsb)
+      reaper.StuffMIDIMessage(16 + output, 0xC0 | v.chan, prg, 0)
+    end
+    v.msb, v.lsb, v.prg = msb, lsb, prg
+    for _, preset in ipairs(Mapper.driver.programs) do
+      if preset.msb == msb and preset.lsb == lsb and preset.prg == prg then v.name = preset.name break end
+    end
     if v.solo then
       -- A live voice change must not leave hanging notes or a muted channel behind.
       reaper.StuffMIDIMessage(16 + output, 0xB0 | v.chan, 123, 0)
@@ -132,11 +176,13 @@ end
 -- A previous import keeps playing to the same MX88 channels, which sounds like looping background notes
 -- and a doubled arrangement, so every import replaces earlier rigs, controller tracks and regions.
 function Mapper.remove_previous_rigs()
-  local removed = false
+  local region_ids = {}
   for index = reaper.CountTracks(0) - 1, 0, -1 do
     local track = reaper.GetTrack(0, index)
     local _, name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
     if name:find("[YAMAHA STY RIG]", 1, true) == 1 then
+      local _, owned = reaper.GetSetMediaTrackInfo_String(track, "P_EXT:MXStyleRegions", "", false)
+      for id in owned:gmatch("%d+") do region_ids[tonumber(id)] = true end
       local depth = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH")
       local last = index
       if depth == 1 then
@@ -147,18 +193,24 @@ function Mapper.remove_previous_rigs()
         end
       end
       for i = last, index, -1 do reaper.DeleteTrack(reaper.GetTrack(0, i)) end
-      removed = true
     elseif name == "[MIDI] Yamaha MX88 Chord Input" or name == "[MIDI] Launchpad Controller" then
       reaper.DeleteTrack(track)
     end
   end
-  if removed then
-    for index = reaper.CountProjectMarkers(0) - 1, 0, -1 do reaper.DeleteProjectMarkerByIndex(0, index) end
-  end
+  for id in pairs(region_ids) do reaper.DeleteProjectMarker(0, id, true) end
 end
 
 function Mapper.create_rig(style, style_path, transposer_path, devices)
-  Mapper.remove_previous_rigs()  local insert_at = reaper.CountTracks(0)
+  assert(Mapper.driver, "Load the Genos Suite before importing")
+  ensure_jsfx(transposer_path)
+  Mapper.remove_previous_rigs()
+  local tempo, meter = style.tempos and style.tempos[1], style.meters and style.meters[1]
+  if tempo or meter then
+    local marker = reaper.FindTempoTimeSigMarker(0, 0)
+    assert(reaper.SetTempoTimeSigMarker(0, marker, 0, -1, -1, tempo and tempo.bpm or reaper.Master_GetTempo(),
+      meter and meter.numerator or 0, meter and meter.denominator or 0, false), "Cannot set style tempo/meter")
+  end
+  local insert_at = reaper.CountTracks(0)
   reaper.InsertTrackAtIndex(insert_at, true)
   local folder = reaper.GetTrack(0, insert_at)
   reaper.GetSetMediaTrackInfo_String(folder, "P_NAME", "[YAMAHA STY RIG] - " .. basename(style_path), true)
@@ -166,7 +218,6 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
 
   devices = devices or {}
   local output = devices.yamaha_output or midi_output_named("Yamaha MX88") or midi_output_named("Yamaha MX")
-  ensure_jsfx(transposer_path)
   local rig = { folder = folder, children = {}, voices = {}, output = output, output_found = output ~= nil }
   local length = reaper.TimeMap2_QNToTime(0, math.max(1, style.end_tick / style.ppq))
   for index, part in ipairs(PARTS) do
@@ -177,6 +228,10 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
     local item = reaper.CreateNewMIDIItemInProj(track, 0, length, false)
     local take = reaper.GetActiveTake(item)
     local voice = insert_events(take, style.events, part.channel, style.ppq, part.role, style.markers)
+    voice.track = track
+    reaper.GetSetMediaTrackInfo_String(track, "P_EXT:MXStyleChannel", tostring(part.channel), true)
+    reaper.GetSetMediaTrackInfo_String(track, "P_NAME", part.name .. " - " .. voice.name, true)
+    reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "[MX Style] " .. voice.name, true)
     rig.voices[#rig.voices + 1] = voice
     rig.children[#rig.children + 1] = track
   end
@@ -195,17 +250,21 @@ function Mapper.create_rig(style, style_path, transposer_path, devices)
     local send = reaper.CreateTrackSend(input, track)
     reaper.SetTrackSendInfo_Value(input, 0, send, "I_SENDMODE", 1) -- pre-FX: parts hear the whole keyboard
     local fx = reaper.TrackFX_AddByName(track, FX_NAME, false, -1)
-    if fx < 0 then rig.fx_missing = true else reaper.TrackFX_SetParam(track, fx, 1, split) end
+    assert(fx >= 0, "Cannot load the Yamaha style chord transposer")
+    reaper.TrackFX_SetParam(track, fx, 1, split)
   end
   -- The keyboard track keeps only the right hand (soloist) for the MX88; the left hand just picks chords.
   local input_fx = reaper.TrackFX_AddByName(input, FX_NAME, false, -1)
-  if input_fx >= 0 then
-    reaper.TrackFX_SetParam(input, input_fx, 1, split)
-    reaper.TrackFX_SetParam(input, input_fx, 2, 1)
-  end
+  assert(input_fx >= 0, "Cannot load the keyboard split chord transposer")
+  reaper.TrackFX_SetParam(input, input_fx, 1, split)
+  reaper.TrackFX_SetParam(input, input_fx, 2, 1)
   rig.input, rig.input_fx = input, input_fx
   if output then reaper.SetMediaTrackInfo_Value(input, "I_MIDIHWOUT", (output << 5) | 1) end
-  rig.voices[#rig.voices + 1] = { chan = 0, msb = 0, lsb = 0, prg = tonumber(reaper.GetExtState("YamahaStyleManager", "SoloVoice")) or 65, solo = true }
+  local solo_program = tonumber(reaper.GetExtState("YamahaStyleManager", "SoloVoice")) or 65
+  local preset = reaper.GetExtState("YamahaStyleManager", "SoloPreset")
+  local solo = VoiceMap.solo(solo_program, preset)
+  rig.voices[#rig.voices + 1] = { chan = 0, msb = solo.msb, lsb = solo.lsb, prg = solo.prg,
+    name = solo.name, gm_prg = preset == "" and solo_program or nil, solo = true }
   return rig
 end
 

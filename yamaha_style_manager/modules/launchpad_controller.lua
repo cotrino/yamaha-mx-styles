@@ -8,6 +8,7 @@ local Launchpad = { last_event = 0, regions = {}, output = nil, input = nil, act
   lit = nil, parts = {}, nano_input = nil, voices = nil, yamaha_output = nil, mapper = nil }
 
 local Regions = require("region_builder")
+local VoiceMap = require("voice_map")
 local SECTION_ROWS = { 8, 7, 6, 4, 3, 2 }
 local SOLO_ROW = 5
 local MAX_PADS = #SECTION_ROWS * 8
@@ -118,7 +119,7 @@ end
 
 local function draw_solo_row()
   local current = current_solo_voice()
-  local active_prg = current and current.prg
+  local active_prg = current and current.gm_prg
   for _, preset in ipairs(SOLO_PRESETS) do
     local color = preset.rgb
     if active_prg == preset.prg then
@@ -132,8 +133,11 @@ end
 local function set_solo_voice(program)
   local solo = current_solo_voice()
   if not solo then return end
-  solo.prg = program
+  local mapped = VoiceMap.resolve({ prg = program }, "solo")
+  solo.msb, solo.lsb, solo.prg, solo.name = mapped.msb, mapped.lsb, mapped.prg, mapped.name
+  solo.gm_prg = program
   reaper.SetExtState("YamahaStyleManager", "SoloVoice", tostring(program), true)
+  reaper.SetExtState("YamahaStyleManager", "SoloPreset", "", true)
   if Launchpad.mapper and Launchpad.yamaha_output then
     Launchpad.mapper.send_voices(Launchpad.yamaha_output, { solo })
   end
@@ -145,17 +149,22 @@ local function set_programmer_mode(enabled)
     hardware(id, HEADER .. string.char(0x0E, enabled and 1 or 0, 0xF7))
   end
 end
-local function collect_regions()
+local function collect_regions(created)
+  local allowed = {}
+  for _, region in ipairs(created or {}) do allowed[region.id] = true end
   local regions = {}
   local _, markers, region_total = reaper.CountProjectMarkers(0)
   for index = 0, markers + region_total - 1 do
-    local _, is_region, start_pos, end_pos, name = reaper.EnumProjectMarkers3(0, index)
-    if is_region then regions[#regions + 1] = { start = start_pos, finish = end_pos, name = name } end
+    local _, is_region, start_pos, end_pos, name, id = reaper.EnumProjectMarkers3(0, index)
+    if is_region and allowed[id] then
+      regions[#regions + 1] = { id = id, start = start_pos, finish = end_pos, name = name }
+    end
   end
+  table.sort(regions, function(a, b) return a.start < b.start end)
   return regions
 end
 
-function Launchpad.setup(folder, region_count, devices, rig, mapper)
+function Launchpad.setup(folder, region_count, devices, rig, mapper, created_regions)
   devices = devices or {}
   local index = math.floor(reaper.GetMediaTrackInfo_Value(folder, "IP_TRACKNUMBER")) - 1
   reaper.InsertTrackAtIndex(index, true)
@@ -177,7 +186,7 @@ function Launchpad.setup(folder, region_count, devices, rig, mapper)
   end
   Launchpad.input_set = {}
   for _, id in ipairs(Launchpad.inputs) do Launchpad.input_set[id] = true end
-  Launchpad.regions = collect_regions()
+  Launchpad.regions = collect_regions(created_regions)
   Launchpad.rig = rig
   Launchpad.voices = rig and rig.voices
   Launchpad.parts = rig and rig.children or {}
@@ -274,6 +283,7 @@ local function go(index, from_pending)
   if kind_of(region.name) == "Main" then Launchpad.last_main = index end
   set_loop(index)
   reaper.SetEditCurPos2(0, region.start, false, true)
+  if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices, region.start) end
   Launchpad.holdoff = reaper.time_precise() + 0.2
   Launchpad.last_pos = nil  if not from_pending then Launchpad.pending = nil end
 end
@@ -311,7 +321,6 @@ function Launchpad.trigger(index)
     Launchpad.after = nil
     go(index)
     reaper.OnPlayButton()
-    if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
     return
   end
   if index == Launchpad.cur and kind_of(region.name) == "Main" then return end
@@ -394,7 +403,6 @@ local function update_arranger()
       Launchpad.after = pending.after
       Launchpad.pending = nil
       go(pending.target, true)
-      resend()
     else
       -- Stick to the current section until just past its end so a late poll still triggers the jump.
       local region = Launchpad.cur and Launchpad.regions[Launchpad.cur]

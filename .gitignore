@@ -4,3 +4,6 @@ styles/
 # Python bytecode from the ReaPack-index validation tool.
 __pycache__/
 *.pyc
+
+# Local REAPER verification projects and reports.
+build/

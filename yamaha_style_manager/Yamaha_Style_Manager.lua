@@ -1,7 +1,8 @@
 -- @description Yamaha STY Style Manager & Live Rig Builder
 -- @author Jose M. Cotrino
--- @version 1.3.1
+-- @version 1.4.0
 -- @about Browse Yamaha STY files, import their MIDI parts, and create an MX88/Launchpad live rig.
+-- @changelog Native MX voices, per-section/channel Genos Inspector editing, safe region ownership, and catalog browsing.
 -- @provides
 --   [main] .
 --   modules/*.lua
@@ -20,12 +21,17 @@ local script_path = debug.getinfo(1, "S").source:match("^@?(.*[\\/])")
 package.path = script_path .. "modules/?.lua;" .. package.path
 
 -- REAPER keeps required modules between runs, so drop them to always load the installed version.
-for _, name in ipairs({ "sty_parser", "mx88_mapper", "voice_map", "region_builder", "launchpad_controller", "chord_detect", "chord_theory" }) do package.loaded[name] = nil end
+for _, name in ipairs({ "sty_parser", "mx88_mapper", "voice_map", "genos_bridge", "region_builder", "launchpad_controller", "chord_detect", "chord_theory" }) do package.loaded[name] = nil end
 
 local Parser = require("sty_parser")
 local Mapper = require("mx88_mapper")
 local Regions = require("region_builder")
 local Launchpad = require("launchpad_controller")
+local Genos = require("genos_bridge")
+local VoiceMap = require("voice_map")
+local suite_driver, suite_error = Genos.load(script_path)
+if suite_driver then Mapper.configure(suite_driver) end
+local suite_folder = Genos.folder or reaper.GetExtState("YamahaStyleManager", "GenosSuiteFolder")
 
 local EXT_SECTION, EXT_KEY = "YamahaStyleManager", "RootFolder"
 local ctx = reaper.ImGui_CreateContext("Yamaha STY Style Manager & Live Rig Builder")
@@ -55,9 +61,11 @@ local function scan_directory(path, relative, files, directories)
   while true do
     local subdir = reaper.EnumerateSubdirectories(path, sub_index)
     if not subdir then break end
-    local child_relative = relative == "" and subdir or relative .. "/" .. subdir
-    directories[child_relative] = true
-    scan_directory(path .. "/" .. subdir, child_relative, files, directories)
+    if subdir ~= "_Sources" then
+      local child_relative = relative == "" and subdir or relative .. "/" .. subdir
+      directories[child_relative] = true
+      scan_directory(path .. "/" .. subdir, child_relative, files, directories)
+    end
     sub_index = sub_index + 1
   end
 
@@ -167,7 +175,12 @@ local function device_selector(slot, list, selected)
   end
 end
 
-local function import_selected()  local file = selected_file()
+local function import_selected()
+  local file = selected_file()
+  if not suite_driver then
+    state.status, state.status_is_error = suite_error, true
+    return
+  end
   if not file then
     state.status, state.status_is_error = "Select a style file first.", true
     return
@@ -178,20 +191,29 @@ local function import_selected()  local file = selected_file()
     state.status, state.status_is_error = "Unable to parse style: " .. parsed_or_error, true
     return
   end
+  if #parsed_or_error.markers == 0 then
+    state.status, state.status_is_error = "This MIDI file has no Yamaha style sections.", true
+    return
+  end
 
   reaper.Undo_BeginBlock()
   reaper.PreventUIRefresh(1)
   local imported, rig_or_error, region_count, launchpad = pcall(function()
+    local playing = reaper.GetPlayState() & 1 ~= 0
+    if playing then reaper.OnStopButton() end
     local rig = Mapper.create_rig(parsed_or_error, file.path, script_path .. "jsfx/sty_chord_transposer.jsfx", select(2, current_devices()))
-    local region_count = Regions.create(parsed_or_error.markers, parsed_or_error.end_tick, parsed_or_error.ppq)
-    local launchpad = Launchpad.setup(rig.folder, region_count, select(2, current_devices()), rig, Mapper)
+    local region_count, created_regions = Regions.create(parsed_or_error.markers, parsed_or_error.end_tick, parsed_or_error.ppq, rig.folder)
+    local launchpad = Launchpad.setup(rig.folder, region_count, select(2, current_devices()), rig, Mapper, created_regions)
+    reaper.SetOnlyTrackSelected(rig.children[1])
     return rig, region_count, launchpad
   end)
   reaper.PreventUIRefresh(-1)
 
   if not imported then
     reaper.Undo_EndBlock("Import Yamaha style (failed)", -1)
-    state.status, state.status_is_error = "Import failed: " .. tostring(rig_or_error), true
+    reaper.Undo_DoUndo2(0)
+    Launchpad.active = false
+    state.status, state.status_is_error = "Import failed and was undone: " .. tostring(rig_or_error), true
     return
   end
 
@@ -202,6 +224,7 @@ local function import_selected()  local file = selected_file()
     "Imported %s: %d rig tracks, %d section region(s). %s",
     file.name, #rig.children, region_count, launchpad.message)
   state.status_is_error = false
+  if #parsed_or_error.warnings > 0 then state.status = state.status .. " Warning: " .. table.concat(parsed_or_error.warnings, "; ") end
 end
 
 local function draw_file_tree()
@@ -215,6 +238,16 @@ local function draw_file_tree()
 
   if #visible == 0 then
     reaper.ImGui_TextDisabled(ctx, "No matching .sty or .mid files.")
+    return
+  end
+  if needle ~= "" then
+    for _, file in ipairs(visible) do
+      if reaper.ImGui_Selectable(ctx, file.display .. "##" .. file.path, state.selected == file.path,
+          reaper.ImGui_SelectableFlags_AllowDoubleClick()) then
+        state.selected = file.path
+        if reaper.ImGui_IsMouseDoubleClicked(ctx, 0) then state.import_requested = true end
+      end
+    end
     return
   end
 
@@ -278,6 +311,24 @@ local function draw_window()
     end
     if not can_import then reaper.ImGui_EndDisabled(ctx) end
 
+    if reaper.ImGui_CollapsingHeader(ctx, "MX88 voices / Genos Inspector") then
+      reaper.ImGui_TextWrapped(ctx, "Import uses named Yamaha MX presets. Open the Inspector, select a style channel and section, then choose its voice and arpeggio. Changes are saved in the existing style MIDI; no overlapping preview notes are added.")
+      if suite_error then reaper.ImGui_TextColored(ctx, 0xFF5555FF, suite_error) end
+      local edited
+      edited, suite_folder = reaper.ImGui_InputText(ctx, "Genos Suite script folder", suite_folder)
+      if reaper.ImGui_Button(ctx, "Load Genos Suite") then
+        reaper.SetExtState(EXT_SECTION, "GenosSuiteFolder", suite_folder, true)
+        suite_driver, suite_error = Genos.load(script_path)
+        if suite_driver then Mapper.configure(suite_driver); suite_folder = Genos.folder end
+      end
+      if suite_driver then
+        if reaper.ImGui_Button(ctx, "Open Genos Inspector") then
+          local ok, err = Genos.open()
+          if not ok then state.status, state.status_is_error = err, true end
+        end
+      end
+    end
+
     if state.open_hw then
       reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
       state.open_hw = false
@@ -314,13 +365,25 @@ local function draw_window()
       if reaper.ImGui_Button(ctx, "Resend MX88 voices now") then
         if Launchpad.mapper then Launchpad.mapper.send_voices(Launchpad.yamaha_output, Launchpad.voices) end
       end
-    end    if reaper.ImGui_CollapsingHeader(ctx, "Keyboard split (applies to next import)") then
+    end
+    if reaper.ImGui_CollapsingHeader(ctx, "Keyboard split (applies to next import)") then
       local split = tonumber(reaper.GetExtState(EXT_SECTION, "Split")) or 60
       local solo = tonumber(reaper.GetExtState(EXT_SECTION, "SoloVoice")) or 65
       local c1, new_split = reaper.ImGui_SliderInt(ctx, "Split point (MIDI note, 60 = C4)", split, 36, 84)
       if c1 then reaper.SetExtState(EXT_SECTION, "Split", tostring(new_split), true) end
-      local c2, new_solo = reaper.ImGui_SliderInt(ctx, "Solo voice (GM program 0-127, 65 = alto sax)", solo, 0, 127)
-      if c2 then reaper.SetExtState(EXT_SECTION, "SoloVoice", tostring(new_solo), true) end
+      if suite_driver then
+        local preset = reaper.GetExtState(EXT_SECTION, "SoloPreset")
+        local current = VoiceMap.solo(solo, preset)
+        if reaper.ImGui_BeginCombo(ctx, "Solo voice (MX preset)", current.name) then
+          for _, voice in ipairs(VoiceMap.presets) do
+            local id = VoiceMap.id(voice)
+            if reaper.ImGui_Selectable(ctx, voice.name .. "##solo" .. id, current == voice) then
+              reaper.SetExtState(EXT_SECTION, "SoloPreset", id, true)
+            end
+          end
+          reaper.ImGui_EndCombo(ctx)
+        end
+      end
     end
     if reaper.ImGui_CollapsingHeader(ctx, "MIDI Hardware", reaper.ImGui_TreeNodeFlags_DefaultOpen()) then
       reaper.ImGui_TextWrapped(ctx, "The Launchpad has two ports (MIDI and MIDIIN2/MIDIOUT2): both are used automatically for pad presses and LEDs. For input, both Launchpad ports in REAPER must be Enabled (not Enabled+Control). Last Launchpad message seen: " .. (Launchpad.last_seen or "none yet (press a pad)"))
@@ -429,7 +492,7 @@ local function draw_chord_window()
     reaper.ImGui_Text(chord_ctx, "Soloist voice (click to change):")
     local solo = Launchpad.current_solo_voice and Launchpad.current_solo_voice()
     for _, preset in ipairs(Launchpad.SOLO_PRESETS or {}) do
-      local active = solo and solo.prg == preset.prg
+      local active = solo and solo.gm_prg == preset.prg
       if reaper.ImGui_RadioButton(chord_ctx, preset.label, active and true or false) then
         Launchpad.set_solo_voice(preset.prg)
       end
@@ -441,7 +504,8 @@ local function draw_chord_window()
     reaper.ImGui_Text(chord_ctx, "Selected voices on the MX88 (bank MSB/LSB, program):")
     for index, voice in ipairs(Launchpad.voices or {}) do
       local label = voice.solo and "Soloist (Ch 1)" or ("Ch " .. (voice.chan + 1))
-      reaper.ImGui_Text(chord_ctx, string.format("%s: %d/%d, prg %d", label, voice.msb or 0, voice.lsb or 0, (voice.prg or 0) + 1))
+      reaper.ImGui_Text(chord_ctx, string.format("%s: %s (%d/%d, prg %d)", label, voice.name or "Unknown",
+        voice.msb or 0, voice.lsb or 0, (voice.prg or 0) + 1))
     end
     reaper.ImGui_End(chord_ctx)
   end

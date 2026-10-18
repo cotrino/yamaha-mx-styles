@@ -59,9 +59,18 @@ local function parse_track(data, first, last, track_number, result)
       if meta_type == 0x01 or meta_type == 0x06 then
         local label = section_name(data:sub(position, position + length - 1))
         if label then result.markers[#result.markers + 1] = { name = label, tick = tick } end
+      elseif meta_type == 0x51 and length == 3 then
+        local a, b, c = data:byte(position, position + 2)
+        local microseconds = (a << 16) | (b << 8) | c
+        if microseconds > 0 then result.tempos[#result.tempos + 1] = { tick = tick, bpm = 60000000 / microseconds } end
+      elseif meta_type == 0x58 and length >= 2 then
+        local numerator, exponent = data:byte(position, position + 1)
+        result.meters[#result.meters + 1] = { tick = tick, numerator = numerator, denominator = 2 ^ exponent }
       end
       position = position + length
+      if meta_type == 0x2F then break end
     elseif status == 0xF0 or status == 0xF7 then
+      running_status = nil
       local length, content_position, length_error = read_vlq(data, position, last)
       if not length then return nil, length_error end
       position = content_position + length
@@ -73,6 +82,7 @@ local function parse_track(data, first, last, track_number, result)
       local data1
       if first_byte < 0x80 then
         data1 = first_byte
+        position = position + 1
       else
         if position > last then return nil, "truncated MIDI event data" end
         data1 = data:byte(position)
@@ -84,6 +94,7 @@ local function parse_track(data, first, last, track_number, result)
         data2 = data:byte(position)
         position = position + 1
       end
+      if data1 >= 0x80 or data2 >= 0x80 then return nil, "invalid MIDI data byte" end
       result.events[#result.events + 1] = {
         tick = tick, status = status, data1 = data1, data2 = data2, track = track_number,
       }
@@ -107,14 +118,18 @@ function Parser.parse(path)
     if header_length < 6 then error("invalid Standard MIDI header length") end
     local format, track_count, ppq = string.unpack(">I2I2I2", data, header + 8)
     if (ppq & 0x8000) ~= 0 then error("SMPTE timing is not supported") end
-    if format > 2 or track_count == 0 or ppq == 0 then error("invalid Standard MIDI header") end
+    if format > 1 or track_count == 0 or ppq == 0 then error("unsupported or invalid Standard MIDI header") end
 
-    local result = { ppq = ppq, events = {}, markers = {}, end_tick = 0 }
+    local result = { ppq = ppq, events = {}, markers = {}, tempos = {}, meters = {}, warnings = {}, end_tick = 0 }
     local position, track_number = header + 8 + header_length, 0
-    while position <= #data - 7 do
+    while track_number < track_count and position <= #data - 7 do
       local chunk = data:sub(position, position + 3)
       local length = string.unpack(">I4", data, position + 4)
       local content_start, content_end = position + 8, position + 7 + length
+      if chunk == "MTrk" and data:sub(content_end - 1, content_end + 1) == "\xFF\x2F\x00" then
+        content_end = content_end + 1
+        result.warnings[#result.warnings + 1] = "Track length omits the final end-of-track zero byte"
+      end
       if content_end > #data then error("truncated MIDI chunk") end
       if chunk == "MTrk" then
         track_number = track_number + 1
@@ -123,7 +138,7 @@ function Parser.parse(path)
       end
       position = content_end + 1
     end
-    if track_number == 0 then error("no MIDI tracks found") end
+    if track_number ~= track_count then error("missing MIDI tracks") end
     table.sort(result.markers, function(a, b) return a.tick < b.tick end)
     local unique, seen = {}, {}
     for _, marker in ipairs(result.markers) do
@@ -131,9 +146,16 @@ function Parser.parse(path)
       if not seen[key] then unique[#unique + 1], seen[key] = marker, true end
     end
     result.markers = unique
+    table.sort(result.tempos, function(a, b) return a.tick < b.tick end)
+    table.sort(result.meters, function(a, b) return a.tick < b.tick end)
+    for index, event in ipairs(result.events) do event.order = index end
+    table.sort(result.events, function(a, b)
+      if a.tick ~= b.tick then return a.tick < b.tick end
+      return a.order < b.order
+    end)
     return result
   end)
-  if not ok then return false, tostring(parsed_or_error):gsub("^.-:%d+: ", "") end
+  if not ok then return false, (tostring(parsed_or_error):gsub("^.-:%d+: ", "")) end
   return true, parsed_or_error
 end
 
